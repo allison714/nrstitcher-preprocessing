@@ -405,17 +405,100 @@ with st.expander("🔎 Preview Tiles (Verify Data)", expanded=False):
             
             st.write(f"Showing **{grid_cols_count}×{grid_rows_count}** tile grid (of {n_tiles_x}×{n_tiles_y} total)")
             
-            gcol1, gcol2, gcol3 = st.columns(3)
+            gcol1, gcol2 = st.columns(2)
             with gcol1:
-                grid_z = st.slider("Z-Slice", min_value=0, max_value=max(0, z_slices-1), value=z_slices // 2, key="grid_z")
+                if z_slices > 1:
+                    grid_z = st.slider("Z-Slice", min_value=0, max_value=z_slices-1, value=z_slices // 2, key="grid_z")
+                else:
+                    grid_z = 0
+                    st.caption("Z-Slice: 0 (single slice)")
             with gcol2:
-                grid_ch = st.slider("Channel", min_value=0, max_value=max(0, n_channels-1), value=0, key="grid_ch")
-            with gcol3:
-                grid_offset_x = st.number_input("Start at Tile X", min_value=0, max_value=max(0, n_tiles_x - grid_cols_count), value=0, key="grid_ox")
-                grid_offset_y = st.number_input("Start at Tile Y", min_value=0, max_value=max(0, n_tiles_y - grid_rows_count), value=0, key="grid_oy")
+                if n_channels > 1:
+                    grid_ch = st.slider("Channel", min_value=0, max_value=n_channels-1, value=0, key="grid_ch")
+                else:
+                    grid_ch = 0
+                    st.caption("Channel: 0 (single channel)")
             
-            # Use the core xy_to_tile_idx function which respects scan_order
+            # --- Mini-Map Visualization ---
+            if n_tiles_x > 0 and n_tiles_y > 0:
+                try:
+                    import matplotlib.pyplot as plt
+                    import matplotlib.patches as patches
+                    
+                    # Create detailed figure
+                    # ... [existing matplotlib code] ...
+                    fig, ax = plt.subplots(figsize=(6, 4))
+                    
+                    # Draw the full grid (representing the dataset)
+                    ax.set_xlim(-0.5, n_tiles_x - 0.5)
+                    ax.set_ylim(-0.5, n_tiles_y - 0.5)
+                    ax.set_aspect('equal')
+                    ax.set_xlabel("Tile X")
+                    ax.set_ylabel("Tile Y")
+                    ax.set_title(f"Full Dataset Map ({n_tiles_x} x {n_tiles_y})")
+                    
+                    # Current Window (Red)
+                    sel_w = min(3, n_tiles_x - grid_offset_x)
+                    sel_h = min(3, n_tiles_y - grid_offset_y)
+                    
+                    rect = patches.Rectangle(
+                        (grid_offset_x - 0.5, grid_offset_y - 0.5), 
+                        sel_w, sel_h, 
+                        linewidth=2, edgecolor='#e11d48', facecolor='#e11d48', alpha=0.3, label="Preview Window"
+                    )
+                    
+                    # Draw grid dots
+                    all_x = []
+                    all_y = []
+                    for y in range(n_tiles_y):
+                        for x in range(n_tiles_x):
+                            all_x.append(x)
+                            all_y.append(y)
+                    
+                    ax.scatter(all_x, all_y, c='#94a3b8', marker='s', s=100, label="Tiles") 
+                    ax.add_patch(rect)
+                    
+                    # Highlight active window tiles
+                    act_x = []
+                    act_y = []
+                    for row_i in range(grid_rows_count):
+                        for col_i in range(grid_cols_count):
+                                gx = grid_offset_x + col_i
+                                gy = grid_offset_y + row_i
+                                act_x.append(gx)
+                                act_y.append(gy)
+                    ax.scatter(act_x, act_y, c='#e11d48', marker='s', s=100) 
+                    
+                    st.pyplot(fig, width="content")
+                    st.caption("The **Red Box** above shows which part of the dataset is being previewed below.")
+                    
+                except ImportError:
+                    st.warning("⚠️ Install `matplotlib` to see the dataset Mini-Map here.")
+                    st.caption("Run: `pip install matplotlib` in your terminal.")
+
+            # Offsets for panning across larger grids
+            if n_tiles_x > grid_cols_count or n_tiles_y > grid_rows_count:
+                ocol1, ocol2 = st.columns(2)
+                with ocol1:
+                    grid_offset_x = st.number_input("Start at Tile X", min_value=0, max_value=max(0, n_tiles_x - grid_cols_count), value=0, key="grid_ox")
+                with ocol2:
+                    grid_offset_y = st.number_input("Start at Tile Y", min_value=0, max_value=max(0, n_tiles_y - grid_rows_count), value=0, key="grid_oy")
+            else:
+                grid_offset_x = 0
+                grid_offset_y = 0
             
+            # Scan Order Preview Override
+            all_orders = [e.value for e in ScanOrder]
+            curr_order_idx = all_orders.index(scan_order) if scan_order in all_orders else 0
+            
+            grid_scan_order = st.selectbox(
+                "Grid Scan Order (Preview Only)", 
+                all_orders, 
+                index=curr_order_idx,
+                key="grid_order_select",
+                help="Test different scan orders to verify alignment. Note: This only affects the preview; update Section 2 to apply to the actual run."
+            )
+
             # Helper: tile_idx + z + ch -> linear file index
             def tile_to_file_idx(tile_idx, z, ch, n_ch, n_z):
                 return tile_idx * (n_ch * n_z) + z * n_ch + ch
@@ -425,33 +508,98 @@ with st.expander("🔎 Preview Tiles (Verify Data)", expanded=False):
             import importlib
             import core as _core_mod
             importlib.reload(_core_mod)
-            from core import get_tile_preview
+            from core import get_tile_preview, xy_to_tile_idx # Ensure xy_to_tile_idx is imported
             
-            # Render grid
-            for row in range(grid_rows_count):
-                cols = st.columns(grid_cols_count)
-                for col_i in range(grid_cols_count):
-                    gx = grid_offset_x + col_i
-                    gy = grid_offset_y + row
-                    
-                    tile_idx = xy_to_tile_idx(gx, gy, n_tiles_x, n_tiles_y, scan_order)
-                    file_idx = tile_to_file_idx(tile_idx, grid_z, grid_ch, n_channels, z_slices)
-                    
-                    with cols[col_i]:
+            # -- Render Composite Grid (Pixel Perfect) --
+            try:
+                from PIL import Image, ImageDraw, ImageFont
+                
+                # We need the first valid image to know dimensions
+                first_valid = None
+                
+                # Pre-scan for first valid image
+                # Just check T0? Or iterate?
+                # Let's assume standard size from first available.
+                # Actually we can just load them on the fly.
+                
+                # To determine canvas size, we need W/H.
+                # Let's try to load the very first tile in the window:
+                # (grid_offset_x, (grid_offset_y + grid_rows_count - 1)) etc?
+                # Simpler: just loop and load all into a dict first.
+                
+                grid_images = {} # Key: (row, col) -> Image
+                tile_w, tile_h = 0, 0
+                
+                for row in range(grid_rows_count):
+                    gy = (grid_offset_y + grid_rows_count - 1) - row
+                    for col in range(grid_cols_count):
+                        gx = grid_offset_x + col
+                        
+                        tile_idx = xy_to_tile_idx(gx, gy, n_tiles_x, n_tiles_y, grid_scan_order)
+                        file_idx = tile_to_file_idx(tile_idx, grid_z, grid_ch, n_channels, z_slices)
+                        
                         if file_idx < len(files):
-                            fname = files[file_idx]
-                            fpath = os.path.join(data_path, fname)
-                            
+                            fpath = os.path.join(data_path, files[file_idx])
                             if os.path.exists(fpath):
-                                img, err, stats = get_tile_preview(fpath)
-                                if img is not None:
-                                    st.image(img, caption=f"T{tile_idx} ({gx},{gy})", use_container_width=True, clamp=True)
-                                else:
-                                    st.error(f"T{tile_idx}: {err}")
-                            else:
-                                st.warning(f"T{tile_idx}: not found")
-                        else:
-                            st.info(f"T{tile_idx}: idx {file_idx} out of range")
+                                img_arr, _, _ = get_tile_preview(fpath) # Returns numpy array (RGB or Gray)
+                                if img_arr is not None:
+                                    # Convert numpy to PIL
+                                    # Check limits
+                                    pil_img = Image.fromarray(img_arr)
+                                    grid_images[(row, col)] = (pil_img, tile_idx)
+                                    if tile_w == 0:
+                                        tile_w, tile_h = pil_img.size
+                
+                if tile_w > 0 and tile_h > 0:
+                    # Calculate Canvas with Overlap
+                    # Overlap is percentage of size? User inputs overlap_x (float) e.g. 10.0
+                    ov_x_px = int(tile_w * (overlap_x / 100.0))
+                    ov_y_px = int(tile_h * (overlap_y / 100.0))
+                    
+                    # Canvas Size
+                    # Width = (W * Cols) - (Overlap * (Cols-1))
+                    canvas_w = (tile_w * grid_cols_count) - (ov_x_px * (grid_cols_count - 1))
+                    canvas_h = (tile_h * grid_rows_count) - (ov_y_px * (grid_rows_count - 1))
+                    
+                    # Ensure positive (overlap < 100%)
+                    canvas_w = max(canvas_w, tile_w)
+                    canvas_h = max(canvas_h, tile_h)
+                    
+                    composite = Image.new('RGB', (canvas_w, canvas_h), (0, 0, 0))
+                    draw = ImageDraw.Draw(composite)
+                    
+                    for row in range(grid_rows_count):
+                        for col in range(grid_cols_count):
+                            if (row, col) in grid_images:
+                                img, tidx = grid_images[(row, col)]
+                                
+                                # Position
+                                # x = col * (W - Overlap)
+                                pos_x = col * (tile_w - ov_x_px)
+                                pos_y = row * (tile_h - ov_y_px)
+                                
+                                composite.paste(img, (pos_x, pos_y))
+                                
+                                # Draw Text
+                                txt = f"T{tidx}"
+                                # Default font
+                                # Draw Top-Left with shadow for visibility
+                                txt_pos = (pos_x + 5, pos_y + 5)
+                                draw.text((txt_pos[0]+1, txt_pos[1]+1), txt, fill="black")
+                                draw.text(txt_pos, txt, fill="white")
+                                
+                    st.image(composite, caption=f"Composite Preview ({overlap_x:.1f}% X / {overlap_y:.1f}% Y Overlap)", width="stretch")
+                    st.caption("ℹ️ Labels are now positioned Top-Left on each tile.")
+                else:
+                    st.warning("No valid images found in this grid view region.")
+                    
+            except Exception as e:
+                st.error(f"Error generating composite preview: {e}")
+                # Fallback? No, just error.
+
+            # Replaced Loop
+            # for row in range(grid_rows_count):
+            # ... [Old Loop Removed] ...
 
 
 # Refactoring layout to put Tiles View toggle in Execution Config or right before Generate
@@ -568,3 +716,15 @@ if generate_btn:
         st.balloons()
     except Exception as e:
         st.error(f"Error generating bundle: {e}")
+
+# --- Author Footer ---
+st.sidebar.markdown("---")
+st.sidebar.markdown(
+    """
+    <div style='text-align: center; color: #555; font-size: 11px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;'>
+        <strong title="I'm a developer now">A. Cairns</strong> || 2026<br>
+        <span style="font-style: italic; color: #777;">Kuan x Bewersdorf Labs</span>
+    </div>
+    """, 
+    unsafe_allow_html=True
+)
