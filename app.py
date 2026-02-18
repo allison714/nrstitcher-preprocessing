@@ -298,6 +298,15 @@ if execution_mode == "Misha Cluster (Slurm)":
 else:
     st.info("Local execution scripts (run_local.bat/.sh) will be generated.")
 
+# Output Format Selection
+st.subheader("Output Format")
+output_formats = st.multiselect(
+    "Select output format(s)",
+    ["Raw (.raw)", "Zarr", "OME-TIFF (.ome.tif)"],
+    default=["OME-TIFF (.ome.tif)"],
+    help="Raw: flat binary (fastest). Zarr: chunked, cloud-friendly. OME-TIFF: widely compatible with bioimage tools (Fiji, Napari, QuPath)."
+)
+
 # --- Generation ---
 st.header("4. Generate Bundle")
 
@@ -428,13 +437,24 @@ if generate_btn:
                 st.info("On Windows, Symlinks require 'Developer Mode'. Falling back to absolute paths in config.")
                 tiles_created_ok = False
         
-        
         # Generate Stacking Script (Preprocessing)
         core.generate_stack_script(manifest, output_dir, data_path)
 
-        # Generate Settings using the status of tiles view
-        # Note: We now point to the 'stacks/' directory created by stack_tiles.py
-        generate_stitch_settings(manifest, output_dir, data_path, use_tiles_view=tiles_created_ok)
+        # Determine the native stitch output format
+        # nr_stitcher only supports 'raw' or 'zarr'
+        want_ometiff = "OME-TIFF (.ome.tif)" in output_formats
+        want_zarr = "Zarr" in output_formats
+        want_raw = "Raw (.raw)" in output_formats
+        
+        # If user only wants OME-TIFF, we still need raw as intermediate
+        stitch_fmt = "zarr" if (want_zarr and not want_raw and not want_ometiff) else "raw"
+        
+        # Generate Settings
+        generate_stitch_settings(manifest, output_dir, data_path, use_tiles_view=tiles_created_ok, stitch_output_format=stitch_fmt)
+        
+        # Generate OME-TIFF converter if requested
+        if want_ometiff:
+            core.generate_ometiff_converter(manifest, output_dir)
         
         if execution_mode == "Misha Cluster (Slurm)":
             core.generate_slurm_script(manifest, slurm_params, output_dir, conda_config)
@@ -442,20 +462,23 @@ if generate_btn:
             embed_path = pi2_local_path if 'pi2_local_path' in locals() and pi2_local_path else None
             
             # Validation for Portable Bundle
-            # Check if user has pi2 installed? No, we check if they provided a path if they want portability.
-            # But generate_local_script handles failure gracefully-ish.
-            # Let's check if the path is valid before calling core.
-            # Validation for Portable Bundle
             if embed_path and not os.path.exists(embed_path):
                 st.error(f"Invalid 'pi2' source path: {embed_path}")
                 st.stop()
                 
-            core.generate_local_script(manifest, output_dir, conda_config, embed_pi2_path=embed_path)
+            core.generate_local_script(manifest, output_dir, conda_config, embed_pi2_path=embed_path, convert_ometiff=want_ometiff)
             
             if not embed_path:
                 st.warning("No 'pi2' source path provided. You MUST download 'pi2' manually and provide the path to create a portable bundle, or ensure it is installed in your environment.")
             else:
                 st.success(f"Embedded 'pi2' from: {embed_path}")
+        
+        # Show output format summary
+        fmt_list = []
+        if want_raw: fmt_list.append("Raw (.raw)")
+        if want_zarr: fmt_list.append("Zarr")
+        if want_ometiff: fmt_list.append("OME-TIFF (.ome.tif)")
+        st.info(f"📦 Output format(s): **{', '.join(fmt_list)}**")
         
         st.success(f"Successfully generated run bundle at: {output_dir}")
         st.balloons()
