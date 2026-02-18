@@ -5,7 +5,9 @@ import os
 from dataclasses import dataclass
 
 class ScanOrder(Enum):
-    SERPENTINE = "serpentine"
+    COL_SERPENTINE = "Column Serpentine (pan-ASLM)"
+    ROW_SERPENTINE = "Row Serpentine (Boustrophedon)"
+    RASTER = "Raster (Row-by-Row)"
 
 class ChannelOrder(Enum):
     INTERLEAVED_PER_Z = "interleaved_per_z"
@@ -105,39 +107,64 @@ def map_index(i: int, n_channels: int, z_slices: int) -> Tuple[int, int, int]:
     
     return tile_idx, z_idx, ch_idx
 
-def tile_idx_to_xy_serpentine(tile_idx: int, n_tiles_y: int) -> Tuple[int, int]:
+def tile_idx_to_xy(tile_idx: int, n_tiles_x: int, n_tiles_y: int, scan_order: str) -> Tuple[int, int]:
     """
-    Maps tile index to (x, y) coordinates for serpentine scan.
-    Origin is bottom-left (0,0).
+    Maps linear tile index to (x, y) grid coordinates.
     
-    Column 0: y increases upward, then step right
-    Column 1: y decreases downward, then step right
-    
-    x = tile_idx // n_tiles_y
-    y_raw = tile_idx % n_tiles_y
-    
-    if x even: y = y_raw
-    if x odd: y = (n_tiles_y - 1) - y_raw
+    Supports three scan orders:
+    - Column Serpentine (pan-ASLM): X slow, Y fast. Even cols go up, odd cols go down.
+    - Row Serpentine (Boustrophedon): Y slow, X fast. Even rows go right, odd rows go left.
+    - Raster: Y slow, X fast. All rows go left to right.
     
     Args:
-        tile_idx: Tile index
-        n_tiles_y: Number of tiles in Y dimension
+        tile_idx: Linear tile index
+        n_tiles_x: Number of tiles in X (columns)
+        n_tiles_y: Number of tiles in Y (rows)
+        scan_order: One of the ScanOrder enum values
         
     Returns:
-        (x, y)
+        (x, y) grid coordinates
     """
-    if n_tiles_y <= 0:
-        raise ValueError("n_tiles_y must be > 0")
-        
-    x = tile_idx // n_tiles_y
-    y_raw = tile_idx % n_tiles_y
-    
-    if x % 2 == 0:
-        y = y_raw
+    if scan_order == ScanOrder.COL_SERPENTINE.value:
+        # Column-wise serpentine: X slow, Y fast
+        x = tile_idx // n_tiles_y
+        y_raw = tile_idx % n_tiles_y
+        if x % 2 == 0:
+            y = y_raw  # Even column: y ascending (up)
+        else:
+            y = (n_tiles_y - 1) - y_raw  # Odd column: y descending (down)
+    elif scan_order == ScanOrder.ROW_SERPENTINE.value:
+        # Row-wise serpentine: Y slow, X fast
+        y = tile_idx // n_tiles_x
+        x_raw = tile_idx % n_tiles_x
+        if y % 2 == 0:
+            x = x_raw  # Even row: x ascending (right)
+        else:
+            x = (n_tiles_x - 1) - x_raw  # Odd row: x descending (left)
     else:
-        y = (n_tiles_y - 1) - y_raw
-        
+        # Raster: row-by-row, left to right
+        y = tile_idx // n_tiles_x
+        x = tile_idx % n_tiles_x
+    
     return x, y
+
+
+def xy_to_tile_idx(gx: int, gy: int, n_tiles_x: int, n_tiles_y: int, scan_order: str) -> int:
+    """
+    Reverse of tile_idx_to_xy: converts (x, y) grid coordinates to linear tile index.
+    """
+    if scan_order == ScanOrder.COL_SERPENTINE.value:
+        if gx % 2 == 0:
+            return gx * n_tiles_y + gy
+        else:
+            return gx * n_tiles_y + (n_tiles_y - 1 - gy)
+    elif scan_order == ScanOrder.ROW_SERPENTINE.value:
+        if gy % 2 == 0:
+            return gy * n_tiles_x + gx
+        else:
+            return gy * n_tiles_x + (n_tiles_x - 1 - gx)
+    else:
+        return gy * n_tiles_x + gx
 
 def parse_filename(filename: str) -> Optional[int]:
     """
@@ -312,7 +339,7 @@ def generate_stitch_settings(manifest: DatasetManifest, output_dir: str, data_pa
     
     for t in range(n_tiles):
         # Calculate grid coordinates using serpentine pattern
-        grid_x, grid_y = tile_idx_to_xy_serpentine(t, manifest.n_tiles_y)
+        grid_x, grid_y = tile_idx_to_xy(t, manifest.n_tiles_x, manifest.n_tiles_y, manifest.scan_order)
         
         # Pixel positions in the stitched coordinate space
         pos_x = grid_x * step_x
@@ -642,7 +669,7 @@ echo [INFO] Found embedded tools in tools\\{target_subdir}. Setting PYTHONPATH s
 :StackTiles
 REM === Fast-path: skip stacking if stacks already exist ===
 set "STACK_COUNT=0"
-for /f %%%%A in ('dir /b stacks\\*.tif 2^>NUL ^| find /c /v ""') do set "STACK_COUNT=%%%%A"
+for /f %%A in ('dir /b stacks\*.tif 2^>NUL ^| find /c /v ""') do set "STACK_COUNT=%%A"
 if %STACK_COUNT% GTR 0 echo [INFO] Found %STACK_COUNT% existing stack(s) in stacks. Skipping stacking.
 if %STACK_COUNT% GTR 0 echo [INFO] To force re-stacking, delete the stacks folder first.
 if %STACK_COUNT% GTR 0 goto VerifyStacks
@@ -666,10 +693,10 @@ echo.
 echo --- Stack Verification ---
 echo   Path: %~dp0stacks
 set "STACK_COUNT=0"
-for /f %%%%A in ('dir /b stacks\\*.tif 2^>NUL ^| find /c /v ""') do set "STACK_COUNT=%%%%A"
+for /f %%A in ('dir /b stacks\*.tif 2^>NUL ^| find /c /v ""') do set "STACK_COUNT=%%A"
 echo   Stack count: %STACK_COUNT% .tif file(s)
 if %STACK_COUNT% EQU 0 goto StacksEmpty
-for %%%%F in (stacks\\tile_*.tif) do echo   First stack: %%%%~nxF (%%%%~zF bytes)& goto DoneVerify
+for %%F in (stacks\tile_*.tif) do echo   First stack: %%~nxF (%%~zF bytes)& goto DoneVerify
 :DoneVerify
 echo --- Verification OK ---
 echo.
@@ -1129,7 +1156,7 @@ def main():
                         vol[z] = img
                         
                 # Write
-                tifffile.imwrite(out_path, vol, compression='zlib')
+                tifffile.imwrite(out_path, vol)
                 
             except Exception as e:
                 print(f"Failed to stack {{out_name}}: {{e}}")

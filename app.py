@@ -18,7 +18,7 @@ except:
 from core import (
     load_files, parse_filename, validate_dataset, infer_tiff_metadata,
     generate_stitch_settings, generate_slurm_script, generate_local_script, generate_manifest,
-    DatasetManifest, ScanOrder, ChannelOrder, map_index
+    DatasetManifest, ScanOrder, ChannelOrder, map_index, xy_to_tile_idx
 )
 
 st.set_page_config(page_title="Slurm Run Bundle Generator", layout="wide")
@@ -33,7 +33,14 @@ st.sidebar.header("Dataset Configuration")
 
 # Default path for convenience (user specific)
 default_path = r"C:\\Users\\allis\\OneDrive\\Desktop\\260212"
-data_path = st.sidebar.text_input("Raw Data Directory", value=default_path)
+data_path = st.sidebar.text_input(
+    "Raw Data Directory", 
+    value=default_path,
+    help="Path to the folder containing your raw TIFF files.\n\n"
+         "**Windows:** `C:\\Users\\YourName\\ImageFolder`\n\n"
+         "**macOS:** `/Users/YourName/ImageFolder`\n\n"
+         "**Linux:** `/home/yourname/ImageFolder`"
+)
 dataset_name = st.sidebar.text_input("Dataset Name (Output Folder)", value="my_dataset")
 output_base_dir = st.sidebar.text_input("Output Location", value=os.path.join(os.path.dirname(data_path) if data_path else ".", "run_bundles"))
 
@@ -114,7 +121,10 @@ with col3:
 
 col4, col5 = st.columns(2)
 with col4:
-    scan_order = st.selectbox("Scan Order", [e.value for e in ScanOrder])
+    scan_order = st.selectbox("Scan Order", [e.value for e in ScanOrder], index=0, 
+        help="**Column Serpentine (pan-ASLM):** X slow, Y fast. Columns alternate up/down.\n\n"
+             "**Row Serpentine:** Y slow, X fast. Rows alternate left/right.\n\n"
+             "**Raster:** Simple row-by-row, left to right.")
 with col5:
     channel_order = st.selectbox("Channel Order", [e.value for e in ChannelOrder])
 
@@ -300,11 +310,29 @@ else:
 
 # Output Format Selection
 st.subheader("Output Format")
+
+# Override default red multiselect tag color to friendly teal
+st.markdown("""
+<style>
+span[data-baseweb="tag"] {
+    background-color: #0d9488 !important;
+}
+</style>
+""", unsafe_allow_html=True)
+
 output_formats = st.multiselect(
     "Select output format(s)",
     ["Raw (.raw)", "Zarr", "OME-TIFF (.ome.tif)"],
     default=["OME-TIFF (.ome.tif)"],
-    help="Raw: flat binary (fastest). Zarr: chunked, cloud-friendly. OME-TIFF: widely compatible with bioimage tools (Fiji, Napari, QuPath)."
+    help=(
+        "**Raw (.raw):** Flat binary file — just voxel data, no headers. "
+        "Fastest to write, but you'll need to know the dimensions (X×Y×Z) to open it. "
+        "Useful if you plan to process the data further with custom scripts.\n\n"
+        "**Zarr:** Chunked, multiscale format. Great for cloud storage and lazy loading "
+        "of large volumes (e.g. with Napari or neuroglancer).\n\n"
+        "**OME-TIFF (.ome.tif):** The gold standard for bioimage data. Embeds voxel sizes "
+        "and metadata directly in the file. Opens natively in Fiji, Napari, QuPath, Imaris, etc."
+    )
 )
 
 # --- Generation ---
@@ -317,57 +345,113 @@ with st.expander("🔎 Preview Tiles (Verify Data)", expanded=False):
     else:
         st.write(f"**Total files loaded:** `{len(files)}`")
         
-        # Selector
-        preview_idx = st.number_input(
-            "Select File Number (Index)", 
-            min_value=0, 
-            max_value=len(files)-1, 
-            value=0, 
-            step=1,
-            help="Choose which file to preview by its number in the list (0 is the first file)."
-        )
+        preview_tab1, preview_tab2 = st.tabs(["📷 Single Tile", "🔲 Grid View (up to 3×3)"])
         
-        selected_file = files[preview_idx]
-        full_path = os.path.join(data_path, selected_file)
-        
-        # Calc metadata
-        t_idx, z_idx, c_idx = map_index(preview_idx, n_channels, z_slices)
-        st.write(f"**Filename:** `{selected_file}`")
-        
-        
-        # Format mapping string with optional metadata
-        meta_str = ""
-        if c_idx < len(channel_meta):
-            name, wl = channel_meta[c_idx]
-            parts = [p for p in [name, wl] if p and p.strip()]
-            if parts:
-                meta_str = f" (**{' - '.join(parts)}**)"
-        
-        st.markdown(f"""
-        **Mapping Indices:**
-        *   **Tile (XY)**: `{t_idx}`
-        *   **Z-Slice**: `{z_idx}`
-        *   **Channel**: `{c_idx}` {meta_str}
-        """)
-        
-        if os.path.exists(full_path):
-            from core import get_tile_preview
-            # Force reload to get new logic if user hasn't restarted
-            import importlib
-            import core
-            importlib.reload(core)
-            from core import get_tile_preview
+        with preview_tab1:
+            # Selector
+            preview_idx = st.number_input(
+                "Select File Number (Index)", 
+                min_value=0, 
+                max_value=len(files)-1, 
+                value=0, 
+                step=1,
+                help="Choose which file to preview by its number in the list (0 is the first file)."
+            )
             
-            img, err, stats = get_tile_preview(full_path)
+            selected_file = files[preview_idx]
+            full_path = os.path.join(data_path, selected_file)
             
-            if img is not None:
-                st.image(img, caption=f"Preview (Auto B/C) - {selected_file}", width="stretch", clamp=True)
-                if stats:
-                    st.caption(f"Stats: Min={stats['orig_min']:.1f}, Max={stats['orig_max']:.1f}, Type={stats['dtype']}")
+            # Calc metadata
+            t_idx, z_idx, c_idx = map_index(preview_idx, n_channels, z_slices)
+            st.write(f"**Filename:** `{selected_file}`")
+            
+            # Format mapping string with optional metadata
+            meta_str = ""
+            if c_idx < len(channel_meta):
+                name, wl = channel_meta[c_idx]
+                parts = [p for p in [name, wl] if p and p.strip()]
+                if parts:
+                    meta_str = f" (**{' - '.join(parts)}**)"
+            
+            st.markdown(f"""
+            **Mapping Indices:**
+            *   **Tile (XY)**: `{t_idx}`
+            *   **Z-Slice**: `{z_idx}`
+            *   **Channel**: `{c_idx}` {meta_str}
+            """)
+            
+            if os.path.exists(full_path):
+                from core import get_tile_preview
+                import importlib
+                import core as _core_mod
+                importlib.reload(_core_mod)
+                from core import get_tile_preview
+                
+                img, err, stats = get_tile_preview(full_path)
+                
+                if img is not None:
+                    st.image(img, caption=f"Preview (Auto B/C) - {selected_file}", use_container_width=True, clamp=True)
+                    if stats:
+                        st.caption(f"Stats: Min={stats['orig_min']:.1f}, Max={stats['orig_max']:.1f}, Type={stats['dtype']}")
+                else:
+                    st.error(f"Could not load image: {err}")
             else:
-                st.error(f"Could not load image: {err}")
-        else:
-            st.error("File not found on disk.")
+                st.error("File not found on disk.")
+        
+        with preview_tab2:
+            # Grid View - up to 3x3 tiles
+            grid_cols_count = min(3, n_tiles_x)
+            grid_rows_count = min(3, n_tiles_y)
+            
+            st.write(f"Showing **{grid_cols_count}×{grid_rows_count}** tile grid (of {n_tiles_x}×{n_tiles_y} total)")
+            
+            gcol1, gcol2, gcol3 = st.columns(3)
+            with gcol1:
+                grid_z = st.slider("Z-Slice", min_value=0, max_value=max(0, z_slices-1), value=z_slices // 2, key="grid_z")
+            with gcol2:
+                grid_ch = st.slider("Channel", min_value=0, max_value=max(0, n_channels-1), value=0, key="grid_ch")
+            with gcol3:
+                grid_offset_x = st.number_input("Start at Tile X", min_value=0, max_value=max(0, n_tiles_x - grid_cols_count), value=0, key="grid_ox")
+                grid_offset_y = st.number_input("Start at Tile Y", min_value=0, max_value=max(0, n_tiles_y - grid_rows_count), value=0, key="grid_oy")
+            
+            # Use the core xy_to_tile_idx function which respects scan_order
+            
+            # Helper: tile_idx + z + ch -> linear file index
+            def tile_to_file_idx(tile_idx, z, ch, n_ch, n_z):
+                return tile_idx * (n_ch * n_z) + z * n_ch + ch
+            
+            # Lazy-load preview function
+            from core import get_tile_preview
+            import importlib
+            import core as _core_mod
+            importlib.reload(_core_mod)
+            from core import get_tile_preview
+            
+            # Render grid
+            for row in range(grid_rows_count):
+                cols = st.columns(grid_cols_count)
+                for col_i in range(grid_cols_count):
+                    gx = grid_offset_x + col_i
+                    gy = grid_offset_y + row
+                    
+                    tile_idx = xy_to_tile_idx(gx, gy, n_tiles_x, n_tiles_y, scan_order)
+                    file_idx = tile_to_file_idx(tile_idx, grid_z, grid_ch, n_channels, z_slices)
+                    
+                    with cols[col_i]:
+                        if file_idx < len(files):
+                            fname = files[file_idx]
+                            fpath = os.path.join(data_path, fname)
+                            
+                            if os.path.exists(fpath):
+                                img, err, stats = get_tile_preview(fpath)
+                                if img is not None:
+                                    st.image(img, caption=f"T{tile_idx} ({gx},{gy})", use_container_width=True, clamp=True)
+                                else:
+                                    st.error(f"T{tile_idx}: {err}")
+                            else:
+                                st.warning(f"T{tile_idx}: not found")
+                        else:
+                            st.info(f"T{tile_idx}: idx {file_idx} out of range")
 
 
 # Refactoring layout to put Tiles View toggle in Execution Config or right before Generate
