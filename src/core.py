@@ -640,56 +640,46 @@ exit /b 1
 echo [INFO] Found embedded tools in tools\\{target_subdir}. Setting PYTHONPATH should fix this.
 
 :StackTiles
-REM === Fast-path: skip stacking if stacks already exist and are valid ===
+REM === Fast-path: skip stacking if stacks already exist ===
 set "STACK_COUNT=0"
-if exist "stacks\\*.tif" (
-    for /f %%A in ('dir /b stacks\\*.tif 2^>NUL ^| find /c /v ""') do set "STACK_COUNT=%%A"
-)
-if %STACK_COUNT% GTR 0 (
-    echo [INFO] Found %STACK_COUNT% existing stack(s) in stacks\\. Skipping stacking step.
-    echo [INFO] To force re-stacking, delete the stacks\\ folder first.
-    goto VerifyStacks
-)
+for /f %%%%A in ('dir /b stacks\\*.tif 2^>NUL ^| find /c /v ""') do set "STACK_COUNT=%%%%A"
+if %STACK_COUNT% GTR 0 echo [INFO] Found %STACK_COUNT% existing stack(s) in stacks. Skipping stacking.
+if %STACK_COUNT% GTR 0 echo [INFO] To force re-stacking, delete the stacks folder first.
+if %STACK_COUNT% GTR 0 goto VerifyStacks
 
 echo.
 echo ============================================================
 echo   STACKING: Compiling 2D slices into 3D volumes
 echo ============================================================
 python stack_tiles.py
-if errorlevel 1 (
-    echo [ERROR] Stacking failed!
-    pause
-    exit /b 1
-)
+if errorlevel 1 goto StackFailed
+goto VerifyStacks
+
+:StackFailed
+echo [ERROR] Stacking failed!
+pause
+exit /b 1
 
 :VerifyStacks
 REM === Post-stack verification ===
 echo.
 echo --- Stack Verification ---
-set "STACKS_DIR=%~dp0stacks"
-echo   Path: %STACKS_DIR%
-
+echo   Path: %~dp0stacks
 set "STACK_COUNT=0"
-if exist "stacks\\*.tif" (
-    for /f %%A in ('dir /b stacks\\*.tif 2^>NUL ^| find /c /v ""') do set "STACK_COUNT=%%A"
-)
+for /f %%%%A in ('dir /b stacks\\*.tif 2^>NUL ^| find /c /v ""') do set "STACK_COUNT=%%%%A"
 echo   Stack count: %STACK_COUNT% .tif file(s)
-
-if %STACK_COUNT% EQU 0 (
-    echo [ERROR] stacks\\ not found or empty; stacking step was skipped or failed.
-    echo [ACTION] Delete the stacks\\ folder and re-run, or check stack_tiles.py output above.
-    pause
-    exit /b 1
-)
-
-REM Show size of first stack
-for /f "tokens=3" %%S in ('dir stacks\\*.tif 2^>NUL ^| findstr /R "tile_"') do (
-    echo   First stack size: %%S bytes
-    goto DoneVerify
-)
+if %STACK_COUNT% EQU 0 goto StacksEmpty
+for %%%%F in (stacks\\tile_*.tif) do echo   First stack: %%%%~nxF (%%%%~zF bytes)& goto DoneVerify
 :DoneVerify
 echo --- Verification OK ---
 echo.
+goto RunStitcher
+
+:StacksEmpty
+echo [ERROR] stacks\\ not found or empty; stacking step was skipped or failed.
+echo [ACTION] Delete the stacks folder and re-run, or check stack_tiles.py output above.
+pause
+exit /b 1
 
 :RunStitcher
 echo ============================================================
@@ -697,21 +687,23 @@ echo   STITCHING: Running pi2 / NRStitcher
 echo ============================================================
 echo Command: {cmd_win} stitch_settings.txt
 {cmd_win} stitch_settings.txt
-if errorlevel 1 (
-    echo [ERROR] Stitching failed!
-    pause
-    exit /b 1
-)
+if errorlevel 1 goto StitchFailed
 
 {'''echo.
 echo ============================================================
 echo   CONVERTING: Raw output to OME-TIFF
 echo ============================================================
 python convert_to_ometiff.py
-if errorlevel 1 (
-    echo [WARN] OME-TIFF conversion failed. Raw output should still exist.
-)''' if convert_ometiff else ''}
+if errorlevel 1 echo [WARN] OME-TIFF conversion failed. Raw output should still exist.
+''' if convert_ometiff else ''}
+goto AllDone
 
+:StitchFailed
+echo [ERROR] Stitching failed!
+pause
+exit /b 1
+
+:AllDone
 echo.
 echo ============================================================
 echo   ALL DONE
