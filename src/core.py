@@ -621,10 +621,10 @@ pip install numpy tifffile scikit-image networkx pyquaternion scipy
 :ActivationDone
 REM Auto-install/Path check
 python -c "import pi2py2" 2>NUL
-if not errorlevel 1 goto RunStitcher
+if not errorlevel 1 goto StackTiles
 
 python -c "import pi2" 2>NUL
-if not errorlevel 1 goto RunStitcher
+if not errorlevel 1 goto StackTiles
 
 :CheckEmbedded
 echo [INFO] 'pi2' or 'pi2py2' module not found in environment.
@@ -640,7 +640,21 @@ exit /b 1
 echo [INFO] Found embedded tools in tools\\{target_subdir}. Setting PYTHONPATH should fix this.
 
 :StackTiles
-echo [INFO] Stacking 2D slices into 3D volumes (this may take a while)...
+REM === Fast-path: skip stacking if stacks already exist and are valid ===
+set "STACK_COUNT=0"
+if exist "stacks\\*.tif" (
+    for /f %%A in ('dir /b stacks\\*.tif 2^>NUL ^| find /c /v ""') do set "STACK_COUNT=%%A"
+)
+if %STACK_COUNT% GTR 0 (
+    echo [INFO] Found %STACK_COUNT% existing stack(s) in stacks\\. Skipping stacking step.
+    echo [INFO] To force re-stacking, delete the stacks\\ folder first.
+    goto VerifyStacks
+)
+
+echo.
+echo ============================================================
+echo   STACKING: Compiling 2D slices into 3D volumes
+echo ============================================================
 python stack_tiles.py
 if errorlevel 1 (
     echo [ERROR] Stacking failed!
@@ -648,8 +662,39 @@ if errorlevel 1 (
     exit /b 1
 )
 
+:VerifyStacks
+REM === Post-stack verification ===
+echo.
+echo --- Stack Verification ---
+set "STACKS_DIR=%~dp0stacks"
+echo   Path: %STACKS_DIR%
+
+set "STACK_COUNT=0"
+if exist "stacks\\*.tif" (
+    for /f %%A in ('dir /b stacks\\*.tif 2^>NUL ^| find /c /v ""') do set "STACK_COUNT=%%A"
+)
+echo   Stack count: %STACK_COUNT% .tif file(s)
+
+if %STACK_COUNT% EQU 0 (
+    echo [ERROR] stacks\\ not found or empty; stacking step was skipped or failed.
+    echo [ACTION] Delete the stacks\\ folder and re-run, or check stack_tiles.py output above.
+    pause
+    exit /b 1
+)
+
+REM Show size of first stack
+for /f "tokens=3" %%S in ('dir stacks\\*.tif 2^>NUL ^| findstr /R "tile_"') do (
+    echo   First stack size: %%S bytes
+    goto DoneVerify
+)
+:DoneVerify
+echo --- Verification OK ---
+echo.
+
 :RunStitcher
-echo Running pi2 / NRStitcher...
+echo ============================================================
+echo   STITCHING: Running pi2 / NRStitcher
+echo ============================================================
 echo Command: {cmd_win} stitch_settings.txt
 {cmd_win} stitch_settings.txt
 if errorlevel 1 (
@@ -659,13 +704,18 @@ if errorlevel 1 (
 )
 
 {'''echo.
-echo [INFO] Converting raw output to OME-TIFF...
+echo ============================================================
+echo   CONVERTING: Raw output to OME-TIFF
+echo ============================================================
 python convert_to_ometiff.py
 if errorlevel 1 (
     echo [WARN] OME-TIFF conversion failed. Raw output should still exist.
 )''' if convert_ometiff else ''}
 
-echo Done.
+echo.
+echo ============================================================
+echo   ALL DONE
+echo ============================================================
 pause
 """
     with open(os.path.join(output_dir, "run_local.bat"), 'w') as f:
@@ -765,24 +815,61 @@ fi
 
 {detection_block}
 
-echo "Stacking 2D slices into 3D volumes..."
-python stack_tiles.py
-if [ $? -ne 0 ]; then
-    echo "Stacking failed!"
+# === Fast-path: skip stacking if stacks already exist and are valid ===
+STACK_COUNT=$(find stacks -maxdepth 1 -name '*.tif' 2>/dev/null | wc -l)
+if [ "$STACK_COUNT" -gt 0 ]; then
+    echo "[INFO] Found $STACK_COUNT existing stack(s) in stacks/. Skipping stacking step."
+    echo "[INFO] To force re-stacking, delete the stacks/ folder first."
+else
+    echo ""
+    echo "============================================================"
+    echo "  STACKING: Compiling 2D slices into 3D volumes"
+    echo "============================================================"
+    python stack_tiles.py
+    if [ $? -ne 0 ]; then
+        echo "[ERROR] Stacking failed!"
+        exit 1
+    fi
+fi
+
+# === Post-stack verification ===
+echo ""
+echo "--- Stack Verification ---"
+STACKS_DIR="$(pwd)/stacks"
+echo "  Path: $STACKS_DIR"
+STACK_COUNT=$(find stacks -maxdepth 1 -name '*.tif' 2>/dev/null | wc -l)
+echo "  Stack count: $STACK_COUNT .tif file(s)"
+
+if [ "$STACK_COUNT" -eq 0 ]; then
+    echo "[ERROR] stacks/ not found or empty; stacking step was skipped or failed."
+    echo "[ACTION] Delete the stacks/ folder and re-run, or check stack_tiles.py output above."
     exit 1
 fi
 
-echo "Running pi2 / NRStitcher..."
+FIRST_STACK=$(ls stacks/*.tif 2>/dev/null | head -1)
+if [ -n "$FIRST_STACK" ]; then
+    FSIZE=$(stat --printf="%s" "$FIRST_STACK" 2>/dev/null || stat -f%z "$FIRST_STACK" 2>/dev/null || echo "unknown")
+    echo "  First stack: $FIRST_STACK ($FSIZE bytes)"
+fi
+echo "--- Verification OK ---"
+echo ""
+
+echo "============================================================"
+echo "  STITCHING: Running pi2 / NRStitcher"
+echo "============================================================"
 echo "Command: $STITCH_CMD {stitch_args}"
 $STITCH_CMD {stitch_args}
 if [ $? -ne 0 ]; then
-    echo "Stitching failed!"
+    echo "[ERROR] Stitching failed!"
     exit 1
 fi
 
-{"echo" + chr(10) + 'echo "Converting raw output to OME-TIFF..."' + chr(10) + "python convert_to_ometiff.py" + chr(10) + 'if [ $? -ne 0 ]; then' + chr(10) + '    echo "WARNING: OME-TIFF conversion failed. Raw output should still exist."' + chr(10) + "fi" if convert_ometiff else ""}
+{"echo" + chr(10) + 'echo "============================================================"' + chr(10) + 'echo "  CONVERTING: Raw output to OME-TIFF"' + chr(10) + 'echo "============================================================"' + chr(10) + "python convert_to_ometiff.py" + chr(10) + 'if [ $? -ne 0 ]; then' + chr(10) + '    echo "WARNING: OME-TIFF conversion failed. Raw output should still exist."' + chr(10) + "fi" if convert_ometiff else ""}
 
-echo "Done"
+echo ""
+echo "============================================================"
+echo "  ALL DONE"
+echo "============================================================"
 date
 """
     with open(os.path.join(output_dir, "run_local.sh"), 'w') as f:
