@@ -41,8 +41,8 @@ data_path = st.sidebar.text_input(
          "**macOS:** `/Users/YourName/ImageFolder`\n\n"
          "**Linux:** `/home/yourname/ImageFolder`"
 )
-dataset_name = st.sidebar.text_input("Dataset Name (Output Folder)", value="my_dataset")
-output_base_dir = st.sidebar.text_input("Output Location", value=os.path.join(os.path.dirname(data_path) if data_path else ".", "run_bundles"))
+dataset_name = st.sidebar.text_input("Dataset Name (Output Folder)", value="ROI_5x5x200", help="Example: HC_5x5x200 (Hippocampus, 5 x tiles, 5 y tiles, 200 z slices)")
+output_base_dir = st.sidebar.text_input("Output Location", value=r"D:\StitchScratch")
 
 st.sidebar.subheader("Metadata")
 prefix_filter = st.sidebar.text_input("Filename Prefix Filter", value="ss_single_", help="Only files starting with this will be included.")
@@ -348,20 +348,45 @@ with st.expander("🔎 Preview Tiles (Verify Data)", expanded=False):
         preview_tab1, preview_tab2 = st.tabs(["📷 Single Tile", "🔲 Grid View (up to 3×3)"])
         
         with preview_tab1:
-            # Selector
-            preview_idx = st.number_input(
-                "Select File Number (Index)", 
+            # Replaced linear index with Tile/Z/Channel selectors
+            
+            # 1. Tile Selector
+            n_tiles_total = n_tiles_x * n_tiles_y
+            pt_t = st.slider(
+                "Tile Index", 
                 min_value=0, 
-                max_value=len(files)-1, 
+                max_value=n_tiles_total-1, 
                 value=0, 
                 step=1,
-                help="Choose which file to preview by its number in the list (0 is the first file)."
+                help=f"Select Tile (0 to {n_tiles_total-1}). Layout depends on Scan Order."
             )
+            
+            # 2. Z Selector
+            if z_slices > 1:
+                pt_z = st.slider("Z-Slice", 0, z_slices-1, 0, key="pt_z")
+            else:
+                pt_z = 0
+                
+            # 3. Channel Selector
+            if n_channels > 1:
+                pt_c = st.slider("Channel", 0, n_channels-1, 0, key="pt_c")
+            else:
+                pt_c = 0
+
+            # Calculate linear index
+            # Order: Tile -> Z -> Channel (Fastest)
+            # idx = t * (n_c * n_z) + z * n_c + c
+            preview_idx = pt_t * (n_channels * z_slices) + pt_z * n_channels + pt_c
+            
+            # Bounds check
+            if preview_idx < 0 or preview_idx >= len(files):
+                st.error(f"Calculated index {preview_idx} is out of bounds (0-{len(files)-1}). Check parameters.")
+                st.stop()
             
             selected_file = files[preview_idx]
             full_path = os.path.join(data_path, selected_file)
             
-            # Calc metadata
+            # Calc metadata (redundant check, but good for display)
             t_idx, z_idx, c_idx = map_index(preview_idx, n_channels, z_slices)
             st.write(f"**Filename:** `{selected_file}`")
             
@@ -403,101 +428,106 @@ with st.expander("🔎 Preview Tiles (Verify Data)", expanded=False):
             grid_cols_count = min(3, n_tiles_x)
             grid_rows_count = min(3, n_tiles_y)
             
-            st.write(f"Showing **{grid_cols_count}×{grid_rows_count}** tile grid (of {n_tiles_x}×{n_tiles_y} total)")
+            # Layout: Left Column (Controls) | Right Column (Mini-Map)
+            layout_cols = st.columns([1, 1])
             
-            gcol1, gcol2 = st.columns(2)
-            with gcol1:
-                if z_slices > 1:
-                    grid_z = st.slider("Z-Slice", min_value=0, max_value=z_slices-1, value=z_slices // 2, key="grid_z")
-                else:
-                    grid_z = 0
-                    st.caption("Z-Slice: 0 (single slice)")
-            with gcol2:
+            # Initialize variable for safety
+            grid_offset_x = 0
+            grid_offset_y = 0
+            grid_scan_order = ScanOrder.COL_SERPENTINE.value
+            
+            # --- LEFT COLUMN: Controls ---
+            with layout_cols[0]:
+                st.write(f"Showing **{grid_cols_count}×{grid_rows_count}** tile grid (of {n_tiles_x}×{n_tiles_y} total)")
+                
                 if n_channels > 1:
                     grid_ch = st.slider("Channel", min_value=0, max_value=n_channels-1, value=0, key="grid_ch")
                 else:
                     grid_ch = 0
-                    st.caption("Channel: 0 (single channel)")
-            
-            # --- Mini-Map Visualization ---
-            if n_tiles_x > 0 and n_tiles_y > 0:
-                try:
-                    import matplotlib.pyplot as plt
-                    import matplotlib.patches as patches
+                    st.caption("Channel: 0 (single)")
+                
+                if z_slices > 1:
+                    grid_z = st.slider("Z-Slice", min_value=0, max_value=z_slices-1, value=z_slices // 2, key="grid_z")
+                else:
+                    grid_z = 0
+                    st.caption("Z-Slice: 0 (single)")
                     
-                    # Create detailed figure
-                    # ... [existing matplotlib code] ...
-                    fig, ax = plt.subplots(figsize=(6, 4))
-                    
-                    # Draw the full grid (representing the dataset)
-                    ax.set_xlim(-0.5, n_tiles_x - 0.5)
-                    ax.set_ylim(-0.5, n_tiles_y - 0.5)
-                    ax.set_aspect('equal')
-                    ax.set_xlabel("Tile X")
-                    ax.set_ylabel("Tile Y")
-                    ax.set_title(f"Full Dataset Map ({n_tiles_x} x {n_tiles_y})")
-                    
-                    # Current Window (Red)
-                    sel_w = min(3, n_tiles_x - grid_offset_x)
-                    sel_h = min(3, n_tiles_y - grid_offset_y)
-                    
-                    rect = patches.Rectangle(
-                        (grid_offset_x - 0.5, grid_offset_y - 0.5), 
-                        sel_w, sel_h, 
-                        linewidth=2, edgecolor='#e11d48', facecolor='#e11d48', alpha=0.3, label="Preview Window"
+                # Offsets - X
+                if n_tiles_x > grid_cols_count:
+                    grid_offset_x = st.slider("Start at Tile X", min_value=0, max_value=max(0, n_tiles_x - grid_cols_count), value=0, key="grid_ox")
+                
+                # Offsets - Y (Under X)
+                if n_tiles_y > grid_rows_count:
+                    grid_offset_y = st.slider("Start at Tile Y", min_value=0, max_value=max(0, n_tiles_y - grid_rows_count), value=0, key="grid_oy")
+                
+                # Scan Order (Half Size)
+                sub_cols = st.columns(2)
+                with sub_cols[0]:
+                    all_orders = [e.value for e in ScanOrder]
+                    curr_order_idx = all_orders.index(scan_order) if scan_order in all_orders else 0
+                    grid_scan_order = st.selectbox(
+                        "Scan Order (Preview)", 
+                        all_orders, 
+                        index=curr_order_idx,
+                        key="grid_order_select",
+                        help="Test scan orders."
                     )
-                    
-                    # Draw grid dots
-                    all_x = []
-                    all_y = []
-                    for y in range(n_tiles_y):
-                        for x in range(n_tiles_x):
-                            all_x.append(x)
-                            all_y.append(y)
-                    
-                    ax.scatter(all_x, all_y, c='#94a3b8', marker='s', s=100, label="Tiles") 
-                    ax.add_patch(rect)
-                    
-                    # Highlight active window tiles
-                    act_x = []
-                    act_y = []
-                    for row_i in range(grid_rows_count):
-                        for col_i in range(grid_cols_count):
-                                gx = grid_offset_x + col_i
-                                gy = grid_offset_y + row_i
-                                act_x.append(gx)
-                                act_y.append(gy)
-                    ax.scatter(act_x, act_y, c='#e11d48', marker='s', s=100) 
-                    
-                    st.pyplot(fig, width="content")
-                    st.caption("The **Red Box** above shows which part of the dataset is being previewed below.")
-                    
-                except ImportError:
-                    st.warning("⚠️ Install `matplotlib` to see the dataset Mini-Map here.")
-                    st.caption("Run: `pip install matplotlib` in your terminal.")
-
-            # Offsets for panning across larger grids
-            if n_tiles_x > grid_cols_count or n_tiles_y > grid_rows_count:
-                ocol1, ocol2 = st.columns(2)
-                with ocol1:
-                    grid_offset_x = st.number_input("Start at Tile X", min_value=0, max_value=max(0, n_tiles_x - grid_cols_count), value=0, key="grid_ox")
-                with ocol2:
-                    grid_offset_y = st.number_input("Start at Tile Y", min_value=0, max_value=max(0, n_tiles_y - grid_rows_count), value=0, key="grid_oy")
-            else:
-                grid_offset_x = 0
-                grid_offset_y = 0
             
-            # Scan Order Preview Override
-            all_orders = [e.value for e in ScanOrder]
-            curr_order_idx = all_orders.index(scan_order) if scan_order in all_orders else 0
-            
-            grid_scan_order = st.selectbox(
-                "Grid Scan Order (Preview Only)", 
-                all_orders, 
-                index=curr_order_idx,
-                key="grid_order_select",
-                help="Test different scan orders to verify alignment. Note: This only affects the preview; update Section 2 to apply to the actual run."
-            )
+            # --- RIGHT COLUMN: Mini-Map ---
+            with layout_cols[1]:
+                if n_tiles_x > 0 and n_tiles_y > 0:
+                    try:
+                        import matplotlib.pyplot as plt
+                        import matplotlib.patches as patches
+                        
+                        # Use variable directly (defined in Left Col)
+                        # Use variable directly (defined in Left Col)
+                        cur_oy = grid_offset_y
+                        
+                        # Resize: User requested significantly bigger (roughly 2.5x original or bigger).
+                        # We remove sub-columns and let it fill the right column (50% page width).
+                        
+                        # create figure - large
+                        fig, ax = plt.subplots(figsize=(6, 5))
+                        # Inverted colors
+                        fig.patch.set_facecolor('black')
+                        ax.set_facecolor('black')
+                        
+                        ax.set_xlim(-0.5, n_tiles_x - 0.5)
+                        ax.set_ylim(-0.5, n_tiles_y - 0.5)
+                        ax.set_aspect('equal')
+                        # Remove axes/titles
+                        ax.axis('off')
+                        
+                        # Grid dots (Grey/Dim)
+                        all_x = []
+                        all_y = []
+                        for y in range(n_tiles_y):
+                            for x in range(n_tiles_x):
+                                all_x.append(x)
+                                all_y.append(y)
+                        ax.scatter(all_x, all_y, c='#666666', marker='s', s=100) # Lighter grey dots
+                        
+                        # Current Window (Green Highlight)
+                        sel_w = min(3, n_tiles_x - grid_offset_x)
+                        # Ensure window doesn't exceed bounds visually
+                        
+                        # Highlight active window tiles
+                        act_x = []
+                        act_y = []
+                        for row_i in range(min(3, n_tiles_y)):
+                            for col_i in range(min(3, n_tiles_x)):
+                                    gx = grid_offset_x + col_i
+                                    gy = cur_oy + row_i
+                                    if gx < n_tiles_x and gy < n_tiles_y:
+                                        act_x.append(gx)
+                                        act_y.append(gy)
+                        ax.scatter(act_x, act_y, c='#22c55e', marker='s', s=100) # Green dots
+                        
+                        st.pyplot(fig, use_container_width=True) # Fills the column
+                        
+                    except ImportError:
+                        st.warning("Install `matplotlib` for map.")
 
             # Helper: tile_idx + z + ch -> linear file index
             def tile_to_file_idx(tile_idx, z, ch, n_ch, n_z):
@@ -588,8 +618,7 @@ with st.expander("🔎 Preview Tiles (Verify Data)", expanded=False):
                                 draw.text((txt_pos[0]+1, txt_pos[1]+1), txt, fill="black")
                                 draw.text(txt_pos, txt, fill="white")
                                 
-                    st.image(composite, caption=f"Composite Preview ({overlap_x:.1f}% X / {overlap_y:.1f}% Y Overlap)", width="stretch")
-                    st.caption("ℹ️ Labels are now positioned Top-Left on each tile.")
+                    st.image(composite, caption="Rough preview, not the final stitch", width="stretch")
                 else:
                     st.warning("No valid images found in this grid view region.")
                     
@@ -624,8 +653,11 @@ generate_btn = st.button("Generate Run Bundle", disabled=(curr_total == 0))
 
 if generate_btn:
     # Determine output folder suffix based on mode
-    mode_suffix = "_slurm" if execution_mode == "Misha Cluster (Slurm)" else "_local"
-    output_folder = f"{dataset_name}{mode_suffix}"
+    from datetime import datetime
+    date_str = datetime.now().strftime("%y%m%d")
+    mode_slug = "slurm" if execution_mode == "Misha Cluster (Slurm)" else "local"
+    # User Request: YYMMDD_local_dataset
+    output_folder = f"{date_str}_{mode_slug}_{dataset_name}"
     output_dir = os.path.join(output_base_dir, output_folder)
     
     # Create manifest
