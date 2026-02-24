@@ -546,7 +546,7 @@ def generate_tiles_view(manifest: DatasetManifest, output_dir: str, data_path: s
     return success_count, errors
 
 
-def generate_local_script(manifest: DatasetManifest, output_dir: str, conda_config: Dict[str, str], embed_pi2_path: Optional[str] = None, convert_ometiff: bool = False):
+def generate_local_script(manifest: DatasetManifest, output_dir: str, conda_config: Dict[str, str], embed_pi2_path: Optional[str] = None, convert_neuroglancer: bool = False):
     """
     Generates a local execution script (run_local.bat for Windows and run_local.sh for POSIX).
     Optionally embeds a copy of 'pi2' package into 'tools/' and sets PYTHONPATH.
@@ -648,9 +648,8 @@ exit /b 1
 python -c "import networkx; import pyquaternion; import scipy" 2>NUL
 if not errorlevel 1 goto ActivationDone
 
-:InstallDeps
-echo [INFO] Installing/Updating dependencies (networkx, pyquaternion, scipy)...
-pip install numpy tifffile scikit-image networkx pyquaternion scipy
+echo [INFO] Installing/Updating dependencies...
+pip install numpy tifffile scikit-image networkx pyquaternion scipy tensorstore
 
 :ActivationDone
 REM Auto-install/Path check
@@ -725,11 +724,11 @@ if errorlevel 1 goto StitchFailed
 
 {'''echo.
 echo ============================================================
-echo   CONVERTING: Raw output to OME-TIFF
+echo   CONVERTING: Raw output to Neuroglancer Precomputed
 echo ============================================================
-python convert_to_ometiff.py
-if errorlevel 1 echo [WARN] OME-TIFF conversion failed. Raw output should still exist.
-''' if convert_ometiff else ''}
+python convert_to_neuroglancer.py
+if errorlevel 1 echo [WARN] Neuroglancer conversion failed. Raw output should still exist.
+''' if convert_neuroglancer else ''}
 
 echo.
 echo ============================================================
@@ -832,9 +831,8 @@ if [ $? -ne 0 ]; then
     fi
 # Check dependencies
 python -c "import networkx; import pyquaternion; import scipy" &> /dev/null
-if [ $? -ne 0 ]; then
     echo "[INFO] Installing dependencies..."
-    pip install numpy tifffile scikit-image networkx pyquaternion scipy
+    pip install numpy tifffile scikit-image networkx pyquaternion scipy tensorstore
 fi
 
 # Auto-install/Path check
@@ -902,7 +900,7 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
-{"echo" + chr(10) + 'echo "============================================================"' + chr(10) + 'echo "  CONVERTING: Raw output to OME-TIFF"' + chr(10) + 'echo "============================================================"' + chr(10) + "python convert_to_ometiff.py" + chr(10) + 'if [ $? -ne 0 ]; then' + chr(10) + '    echo "WARNING: OME-TIFF conversion failed. Raw output should still exist."' + chr(10) + "fi" if convert_ometiff else ""}
+{"echo" + chr(10) + 'echo "============================================================"' + chr(10) + 'echo "  CONVERTING: Raw output to Neuroglancer Precomputed"' + chr(10) + 'echo "============================================================"' + chr(10) + "python convert_to_neuroglancer.py" + chr(10) + 'if [ $? -ne 0 ]; then' + chr(10) + '    echo "WARNING: Neuroglancer conversion failed. Raw output should still exist."' + chr(10) + "fi" if convert_neuroglancer else ""}
 
 echo ""
 echo "============================================================"
@@ -927,7 +925,7 @@ date
             pass
 
 
-def generate_slurm_script(manifest: DatasetManifest, slurm_params: Dict, output_dir: str, conda_config: Dict[str, str]):
+def generate_slurm_script(manifest: DatasetManifest, slurm_params: Dict, output_dir: str, conda_config: Dict[str, str], convert_neuroglancer: bool = False):
     """
     Generates run_nrstitcher.sbatch targeting pi2/NRStitcher on Misha.
     """
@@ -1009,6 +1007,16 @@ conda activate {env_name}
 # 4. Run Stitcher
 echo "Running command: $STITCH_CMD"
 srun $STITCH_CMD --config stitch_settings.txt --output {manifest.dataset_name}_stitched
+
+{'''
+echo ""
+echo "============================================================"
+echo "  CONVERTING: Raw output to Neuroglancer Precomputed"
+echo "============================================================"
+# Attempt to install tensorstore if missing (cluster env might not have it)
+pip install tensorstore --user -q
+python convert_to_neuroglancer.py
+''' if convert_neuroglancer else ""}
 
 echo "Done"
 date
@@ -1200,186 +1208,146 @@ if __name__ == "__main__":
 
 def generate_ometiff_converter(manifest: DatasetManifest, output_dir: str):
     """
-    Generates convert_to_ometiff.py script for post-processing.
+    [TABLED] Generates convert_to_ometiff.py script for post-processing.
     Converts the raw binary output from nr_stitcher into OME-TIFF.
+    """
+    # [Tabled in favor of Neuroglancer Precomputed]
+    pass
+
+def generate_neuroglancer_converter(manifest: DatasetManifest, output_dir: str):
+    """
+    Generates convert_to_neuroglancer.py script for post-processing.
+    Converts the raw binary output from nr_stitcher into Neuroglancer Precomputed format using TensorStore.
     """
     
     script_content = f'''#!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-Convert NRStitcher raw output to OME-TIFF.
+Convert NRStitcher raw output to Neuroglancer Precomputed.
 Generated by the NRStitcher Run Bundle Generator.
 """
 import os
 import sys
 import glob
 import numpy as np
-import tifffile
+import json
+
+try:
+    import tensorstore as ts
+except ImportError:
+    print("ERROR: 'tensorstore' package not found.")
+    print("Please install it with: pip install tensorstore")
+    sys.exit(1)
 
 # Dataset metadata
 SAMPLE_NAME = "{manifest.dataset_name}"
-VOXEL_X = {manifest.voxel_size_x_um}
-VOXEL_Y = {manifest.voxel_size_y_um}
-VOXEL_Z = {manifest.voxel_size_z_um}
+VOXEL_X_NM = {int(manifest.voxel_size_x_um * 1000)}
+VOXEL_Y_NM = {int(manifest.voxel_size_y_um * 1000)}
+VOXEL_Z_NM = {int(manifest.voxel_size_z_um * 1000)}
 BIT_DEPTH = {manifest.bit_depth}
+WIDTH = {manifest.width_px}
+HEIGHT = {manifest.height_px}
+# Actual dimensions will be parsed from the .txt/.hdr file
 
 def find_raw_output():
     """Find the stitched .raw output file (largest valid .raw)."""
     candidates = []
-    # Try pattern based on sample name first
     candidates.extend(glob.glob(f"{{SAMPLE_NAME}}*.raw"))
-    # Fallback to all raw files if none found
     if not candidates:
         candidates.extend(glob.glob("*.raw"))
         
     if not candidates:
         return None
         
-    # Filter out known debug artifacts
-    valid_candidates = []
-    for f in candidates:
-        if "defpoints" in f or "refpoints" in f or "gof" in f:
-            continue
-        valid_candidates.append(f)
-        
-    # If we filtered everything, revert to original candidates (just in case)
+    valid_candidates = [f for f in candidates if not any(x in f for x in ["defpoints", "refpoints", "gof"])]
     if not valid_candidates:
         valid_candidates = candidates
 
-    # Sort by size (largest first) - the stitched volume is huge
     valid_candidates.sort(key=lambda x: os.path.getsize(x), reverse=True)
-    
     return valid_candidates[0]
 
-def read_raw_file(raw_path):
-    """
-    Read a raw binary file. 
-    nr_stitcher writes a companion .txt file with dimensions.
-    """
-    # Look for dimension info
-    # nr_stitcher typically creates files like: sample_stitch_complete.raw
-    # and a corresponding sample_stitch_complete.txt or .hdr with dims
+def get_dimensions(raw_path):
+    """Parse dimensions from companion .txt/.hdr file or manifest recommendations."""
     base = os.path.splitext(raw_path)[0]
-    
-    # Try to find dimension file
-    dim_file = None
     for ext in [".txt", ".hdr", ".dim"]:
         candidate = base + ext
         if os.path.exists(candidate):
-            dim_file = candidate
-            break
-    
-    if dim_file:
-        print(f"Found dimension file: {{dim_file}}")
-        with open(dim_file, "r") as f:
-            content = f.read().strip()
-        # Parse dimensions - format varies but usually "x y z" or "x,y,z"
-        import re
-        nums = re.findall(r"\\d+", content)
-        if len(nums) >= 3:
-            dims = [int(n) for n in nums[:3]]
-            print(f"Parsed dimensions: {{dims}}")
-        else:
-            print(f"Could not parse dimensions from {{dim_file}}")
-            dims = None
-    else:
-        dims = None
-    
-    # Determine dtype from bit depth
-    if BIT_DEPTH == 8:
-        dtype = np.uint8
-    elif BIT_DEPTH == 16:
-        dtype = np.uint16
-    elif BIT_DEPTH == 32:
-        dtype = np.float32
-    else:
-        dtype = np.uint16  # Default
-    
-    # Read raw data
-    data = np.fromfile(raw_path, dtype=dtype)
-    print(f"Read {{len(data)}} voxels ({{data.nbytes / 1e9:.2f}} GB)")
-    
-    if dims:
-        # Reshape (Z, Y, X) - nr_stitcher convention
-        try:
-            vol = data.reshape(dims[2], dims[1], dims[0])
-            print(f"Reshaped to (Z={{dims[2]}}, Y={{dims[1]}}, X={{dims[0]}})")
-            return vol
-        except ValueError as e:
-            print(f"Reshape failed: {{e}}")
-            print("Trying alternative dimension ordering...")
-            try:
-                vol = data.reshape(dims[0], dims[1], dims[2])
-                print(f"Reshaped to {{vol.shape}}")
-                return vol
-            except ValueError:
-                pass
-    
-    # If no dimension file or reshape failed, try to infer
-    total = len(data)
-    # Assume roughly cubic
-    side = int(round(total ** (1/3)))
-    print(f"No dimension info. Total voxels: {{total}}. Attempting cubic ({{side}}^3)...")
-    
-    # This is a fallback - unlikely to be correct
-    print("WARNING: Could not determine dimensions. Please check output.")
-    return data
+            with open(candidate, "r") as f:
+                content = f.read()
+            import re
+            nums = re.findall(r"\\d+", content)
+            if len(nums) >= 3:
+                return [int(n) for n in nums[:3]] # X, Y, Z
+    return None
 
 def main():
     print("=" * 60)
-    print("OME-TIFF Converter")
+    print("Neuroglancer Precomputed Converter (TensorStore)")
     print("=" * 60)
     
     raw_path = find_raw_output()
     if not raw_path:
         print("ERROR: No .raw output file found!")
-        print("Make sure the stitcher has completed successfully.")
         sys.exit(1)
     
-    print(f"Found raw output: {{raw_path}}")
-    print(f"File size: {{os.path.getsize(raw_path) / 1e9:.2f}} GB")
-    
-    vol = read_raw_file(raw_path)
-    
-    if vol.ndim != 3:
-        print(f"WARNING: Expected 3D volume, got {{vol.ndim}}D array of shape {{vol.shape}}")
-        print("Skipping OME-TIFF conversion.")
+    dims = get_dimensions(raw_path)
+    if not dims:
+        print("ERROR: Could not determine dimensions from .txt or .hdr file.")
         sys.exit(1)
     
-    # Output path
-    out_name = f"{{SAMPLE_NAME}}_stitched.ome.tif"
-    print(f"Writing OME-TIFF: {{out_name}}")
-    print(f"Volume shape: {{vol.shape}} (Z, Y, X)")
+    # nr_stitcher: X, Y, Z. TensorStore/Neuroglancer: Z, Y, X or X, Y, Z depending on spec.
+    # We'll use [X, Y, Z] for the underlying raw and map it.
+    nx, ny, nz = dims
+    print(f"Detected Dimensions: X={{nx}}, Y={{ny}}, Z={{nz}}")
     
-    # OME-TIFF metadata
-    metadata = {{
-        "axes": "ZYX",
-        "PhysicalSizeX": VOXEL_X,
-        "PhysicalSizeXUnit": "µm",
-        "PhysicalSizeY": VOXEL_Y,
-        "PhysicalSizeYUnit": "µm",
-        "PhysicalSizeZ": VOXEL_Z,
-        "PhysicalSizeZUnit": "µm",
+    dtype = 'uint8' if BIT_DEPTH == 8 else 'uint16'
+    
+    # Define TensorStore spec for the source RAW file
+    source_spec = {{
+        'driver': 'binary_array',
+        'path': raw_path,
+        'dtype': dtype,
+        'transform': {{
+            'input_labels': ['x', 'y', 'z'],
+            'input_inclusive_min': [0, 0, 0],
+            'input_exclusive_max': [nx, ny, nz],
+        }},
     }}
     
-    # Write with tifffile - bigtiff for large files, tile for performance
-    tifffile.imwrite(
-        out_name,
-        vol,
-        bigtiff=True,
-        tile=(256, 256),
-        compression="zlib",
-        metadata=metadata,
-        ome=True,
-    )
+    # Define Neuroglancer Precomputed target
+    output_path = "precomputed"
+    target_spec = {{
+        'driver': 'neuroglancer_precomputed',
+        'path': output_path,
+        'multiscale_metadata': {{
+            'type': 'image',
+            'data_type': dtype,
+            'num_channels': 1,
+        }},
+        'scale_metadata': {{
+            'size': [nx, ny, nz],
+            'encoding': 'raw', # or 'compressed_segmentation' / 'jpeg'
+            'chunk_size': [128, 128, 128],
+            'resolution': [VOXEL_X_NM, VOXEL_Y_NM, VOXEL_Z_NM],
+        }},
+    }}
+
+    print(f"Opening source raw: {{raw_path}}")
+    source = ts.open(source_spec).result()
     
-    out_size = os.path.getsize(out_name) / 1e9
-    print(f"Done! Output: {{out_name}} ({{out_size:.2f}} GB)")
-    print("Open with Fiji, Napari, or QuPath.")
+    print(f"Creating/Opening target precomputed: {{output_path}}")
+    dataset = ts.open(target_spec, create=True, delete_existing=True).result()
+    
+    print("Copying data (this may take a while)...")
+    # TensorStore handles the chunked copy efficiently
+    dataset.write(source).result()
+    
+    print(f"Success! Neuroglancer Precomputed output at: {{os.path.abspath(output_path)}}")
+    print("You can view this by serving the folder with a CORS-enabled web server.")
 
 if __name__ == "__main__":
     main()
 '''
     
-    with open(os.path.join(output_dir, "convert_to_ometiff.py"), "w") as f:
+    with open(os.path.join(output_dir, "convert_to_neuroglancer.py"), "w") as f:
         f.write(script_content)

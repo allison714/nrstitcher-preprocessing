@@ -205,7 +205,9 @@ with st.expander("Configure Backend Paths", expanded=True):
             "Path to 'pi2' Source/Binaries", 
             value=default_pi2,
             placeholder=r"C:\Users\allis\code\pi2", 
-            help="Folder containing the 'pi2' python package (and .pyd files for Windows). Download from GitHub Releases."
+            help="Folder containing the 'pi2' python package.\n\n"
+                 "⬇️ **Download**: `pi2-v4.5-win-no-opencl.zip` from:\n"
+                 "https://github.com/arttumiettinen/pi2/releases"
         )
             
         # Auto detection helpers
@@ -322,16 +324,17 @@ span[data-baseweb="tag"] {
 
 output_formats = st.multiselect(
     "Select output format(s)",
-    ["Raw (.raw)", "Zarr", "OME-TIFF (.ome.tif)"],
-    default=["OME-TIFF (.ome.tif)"],
+    ["Raw (.raw)", "Zarr", "Neuroglancer Precomputed"],
+    default=["Neuroglancer Precomputed"],
     help=(
         "**Raw (.raw):** Flat binary file — just voxel data, no headers. "
         "Fastest to write, but you'll need to know the dimensions (X×Y×Z) to open it. "
         "Useful if you plan to process the data further with custom scripts.\n\n"
         "**Zarr:** Chunked, multiscale format. Great for cloud storage and lazy loading "
         "of large volumes (e.g. with Napari or neuroglancer).\n\n"
-        "**OME-TIFF (.ome.tif):** The gold standard for bioimage data. Embeds voxel sizes "
-        "and metadata directly in the file. Opens natively in Fiji, Napari, QuPath, Imaris, etc."
+        "**Neuroglancer Precomputed:** Optimized format for 3D web visualization. "
+        "Requires the `tensorstore` Python package for conversion. Works seamlessly with "
+        "neuroglancer and other web viewers."
     )
 )
 
@@ -704,24 +707,23 @@ if generate_btn:
         # Generate Stacking Script (Preprocessing)
         core.generate_stack_script(manifest, output_dir, data_path)
 
-        # Determine the native stitch output format
         # nr_stitcher only supports 'raw' or 'zarr'
-        want_ometiff = "OME-TIFF (.ome.tif)" in output_formats
+        want_neuroglancer = "Neuroglancer Precomputed" in output_formats
         want_zarr = "Zarr" in output_formats
         want_raw = "Raw (.raw)" in output_formats
         
-        # If user only wants OME-TIFF, we still need raw as intermediate
-        stitch_fmt = "zarr" if (want_zarr and not want_raw and not want_ometiff) else "raw"
+        # If user only wants Neuroglancer, we still need raw as intermediate
+        stitch_fmt = "zarr" if (want_zarr and not want_raw and not want_neuroglancer) else "raw"
         
         # Generate Settings
         generate_stitch_settings(manifest, output_dir, data_path, use_tiles_view=tiles_created_ok, stitch_output_format=stitch_fmt)
         
-        # Generate OME-TIFF converter if requested
-        if want_ometiff:
-            core.generate_ometiff_converter(manifest, output_dir)
+        # Generate Neuroglancer converter if requested
+        if want_neuroglancer:
+            core.generate_neuroglancer_converter(manifest, output_dir)
         
         if execution_mode == "Misha Cluster (Slurm)":
-            core.generate_slurm_script(manifest, slurm_params, output_dir, conda_config)
+            core.generate_slurm_script(manifest, slurm_params, output_dir, conda_config, convert_neuroglancer=want_neuroglancer)
         else:
             embed_path = pi2_local_path if 'pi2_local_path' in locals() and pi2_local_path else None
             
@@ -730,7 +732,7 @@ if generate_btn:
                 st.error(f"Invalid 'pi2' source path: {embed_path}")
                 st.stop()
                 
-            core.generate_local_script(manifest, output_dir, conda_config, embed_pi2_path=embed_path, convert_ometiff=want_ometiff)
+            core.generate_local_script(manifest, output_dir, conda_config, embed_pi2_path=embed_path, convert_neuroglancer=want_neuroglancer)
             
             if not embed_path:
                 st.warning("No 'pi2' source path provided. You MUST download 'pi2' manually and provide the path to create a portable bundle, or ensure it is installed in your environment.")
@@ -741,7 +743,7 @@ if generate_btn:
         fmt_list = []
         if want_raw: fmt_list.append("Raw (.raw)")
         if want_zarr: fmt_list.append("Zarr")
-        if want_ometiff: fmt_list.append("OME-TIFF (.ome.tif)")
+        if want_neuroglancer: fmt_list.append("Neuroglancer Precomputed")
         st.info(f"📦 Output format(s): **{', '.join(fmt_list)}**")
         
         st.success(f"Successfully generated run bundle at: {output_dir}")
