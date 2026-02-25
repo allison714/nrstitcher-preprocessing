@@ -4,6 +4,7 @@ import sys
 import pandas as pd
 from typing import Dict
 import shutil
+import numpy as np
 
 # Add src to path
 sys.path.append(os.path.join(os.path.dirname(__file__), 'src'))
@@ -309,6 +310,24 @@ if execution_mode == "Misha Cluster (Slurm)":
     }
 else:
     st.info("Local execution scripts (run_local.bat/.sh) will be generated.")
+
+# Alignment Settings
+st.subheader("Stitching Presets")
+run_preset = st.radio(
+    "Select Run Mode",
+    ["Full Quality (Non-Rigid)", "Fast Preview (Rigid)"],
+    index=0,
+    help="**Full Quality:** High-resolution stitching with non-linear warping. Best for final results.\n\n"
+         "**Fast Preview:** Lower resolution (binned) rigid-only alignment. Use this to quickly verify overlapping areas before a full run."
+)
+
+# Derive parameters based on preset
+if run_preset == "Full Quality (Non-Rigid)":
+    allow_warping = True
+    stitch_binning = 1
+else:
+    allow_warping = False
+    stitch_binning = 2  # Speed up coarse and fine steps
 
 # Output Format Selection
 st.subheader("Output Format")
@@ -659,10 +678,13 @@ if generate_btn:
     from datetime import datetime
     date_str = datetime.now().strftime("%y%m%d")
     mode_slug = "slurm" if execution_mode == "Misha Cluster (Slurm)" else "local"
-    # User Request: YYMMDD_local_dataset
-    output_folder = f"{date_str}_{mode_slug}_{dataset_name}"
+    # User Request: YYMMDD_local_nr_dataset
+    align_slug = "nr" if allow_warping else "rigid"
+    output_folder = f"{date_str}_{mode_slug}_{align_slug}_{dataset_name}"
     output_dir = os.path.join(output_base_dir, output_folder)
+    st.session_state['last_output_dir'] = output_dir
     
+    os.makedirs(output_dir, exist_ok=True)
     # Create manifest
     manifest = DatasetManifest(
         dataset_name=dataset_name,
@@ -716,11 +738,19 @@ if generate_btn:
         stitch_fmt = "zarr" if (want_zarr and not want_raw and not want_neuroglancer) else "raw"
         
         # Generate Settings
-        generate_stitch_settings(manifest, output_dir, data_path, use_tiles_view=tiles_created_ok, stitch_output_format=stitch_fmt)
+        core.generate_stitch_settings(
+            manifest, 
+            output_dir, 
+            data_path, 
+            use_tiles_view=tiles_created_ok, 
+            stitch_output_format=stitch_fmt,
+            allow_warping=allow_warping,
+            binning=stitch_binning
+        )
         
         # Generate Neuroglancer converter if requested
         if want_neuroglancer:
-            core.generate_neuroglancer_converter(manifest, output_dir)
+            core.generate_neuroglancer_converter(manifest, output_dir, binning=stitch_binning)
         
         if execution_mode == "Misha Cluster (Slurm)":
             core.generate_slurm_script(manifest, slurm_params, output_dir, conda_config, convert_neuroglancer=want_neuroglancer)
@@ -750,6 +780,93 @@ if generate_btn:
         st.balloons()
     except Exception as e:
         st.error(f"Error generating bundle: {e}")
+
+# --- Tabs for Post-Generation / Utilities ---
+st.write("---")
+tab_verify, tab_analytics = st.tabs(["Verification & Metadata", "Alignment Analytics"])
+
+with tab_verify:
+    st.write("### Review Generated Bundle")
+    
+    last_out = st.session_state.get('last_output_dir')
+    if last_out:
+        st.write(f"📂 **Bundle Path**: `{last_out}`")
+        if os.path.exists(last_out):
+            st.write("✅ Bundle directory ready.")
+            st.json(conda_config)
+        else:
+            st.warning("Previous bundle directory no longer found.")
+    else:
+        st.info("Generate a bundle to see details here.")
+
+with tab_analytics:
+    st.write("### Warping Diagnostics")
+    st.markdown("""
+    This tool visualizes the **deformation field** produced by `pi2`. 
+    It compares the reference grid with the optimized warped coordinates.
+    
+    > [!TIP]
+    > **Decision Support**: To determine if nonlinear alignment is truly needed, run a **Full Quality** stitch first. 
+    > If the resulting displacement vectors (arrows) are small and uniform, it means the sample 
+    > is stable and you can likely use the **Fast Preview (Rigid)** mode for similar future datasets to save time.
+    """)
+    
+    analysis_init = st.session_state.get('last_output_dir', "")
+    analysis_dir = st.text_input("Bundle Folder to Analyze", value=analysis_init, help="Path to a previously generated bundle containing 'defpoints' and 'refpoints'.")
+    
+    if st.button("Run Analytics"):
+        import glob
+        
+        def find_file(dir_path, pattern):
+            # Try root then trace/
+            for folder in [dir_path, os.path.join(dir_path, "trace")]:
+                if not os.path.exists(folder): continue
+                # Look for exact or fuzzy match, strictly requiring .txt to avoid .raw or other files
+                candidates = glob.glob(os.path.join(folder, f"*{pattern}*.txt"))
+                if candidates:
+                    # Sort to get the most specific or latest
+                    candidates.sort(key=os.path.getmtime, reverse=True)
+                    return candidates[0]
+            return None
+
+        def_path = find_file(analysis_dir, "defpoints")
+        ref_path = find_file(analysis_dir, "refpoints")
+        
+        if def_path and ref_path:
+            st.info(f"Using: `{os.path.basename(def_path)}` & `{os.path.basename(ref_path)}`")
+            def_pts = core.parse_alignment_points(def_path)
+            ref_pts = core.parse_alignment_points(ref_path)
+            
+            if def_pts is not None and ref_pts is not None:
+                if len(def_pts) != len(ref_pts):
+                    st.error(f"Mismatch in point counts: Def={len(def_pts)}, Ref={len(ref_pts)}")
+                else:
+                    displacement = def_pts - ref_pts
+                    mag = np.linalg.norm(displacement, axis=1)
+                    
+                    st.write(f"📊 **Points Analyzed**: {len(def_pts)}")
+                    st.write(f"📏 **Max Displacement**: {np.max(mag):.2f} pixels")
+                    st.write(f"📉 **Mean Displacement**: {np.mean(mag):.2f} pixels")
+                    
+                    import matplotlib.pyplot as plt
+                    
+                    fig, ax = plt.subplots(figsize=(10, 8))
+                    # Plot in XY plane (projecting Z)
+                    q = ax.quiver(ref_pts[:, 0], ref_pts[:, 1], displacement[:, 0], displacement[:, 1], 
+                                 mag, cmap='viridis', angles='xy', scale_units='xy', scale=1)
+                fig.colorbar(q, label='Displacement Magnitude (px)')
+                ax.set_title("Warping Displacement Field (XY Projection)")
+                ax.set_xlabel("X (pixels)")
+                ax.set_ylabel("Y (pixels)")
+                ax.invert_yaxis() # Origin at top-left for images
+                ax.grid(True, linestyle='--', alpha=0.3)
+                
+                st.pyplot(fig)
+                
+                st.success("Visualization generated! Viridis colors show magnitude (Purple=Low, Yellow=High).")
+        else:
+            st.warning("⚠️ Could not find or parse `defpoints.txt` and `refpoints.txt` in the specified directory.")
+            st.info("Note: These files are generated *after* running the stitcher. Make sure the job has completed.")
 
 # --- Author Footer ---
 st.sidebar.markdown("---")

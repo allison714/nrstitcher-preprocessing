@@ -13,7 +13,22 @@ This Streamlit application generates ready-to-execute "Run Bundles" for the [pi2
 
 ## Quick Start
 
-### 1. Installation
+### 1. Get the Code & Stitcher
+
+You'll need this UI application and the core stitcher (`pi2`).
+
+**A. The Run Bundle App (This UI)**
+Clone this repository to your machine:
+```bash
+git clone https://github.com/allison714/nrstitcher-preprocessing.git
+cd nrstitcher-preprocessing
+```
+
+**B. The Core Stitcher (`pi2`)**
+*   **Windows (Recommended)**: Download the pre-compiled binary distribution (`pi2-v4.5-win-no-opencl`). The app automatically supports it if placed at `D:\pi2-v4.5-win-no-opencl` (or you can link it manually). You do NOT need to clone the pi2 repo.
+*   **Source Building**: If you must build from source, clone the `pi2` repo (`git clone https://github.com/arttumiettinen/pi2.git`).
+
+### 2. Installation
 
 Ensure you have Python 3.9+ and `conda` installed.
 
