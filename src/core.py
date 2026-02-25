@@ -1272,16 +1272,21 @@ HEIGHT = {manifest.height_px}
 # Actual dimensions will be parsed from the .txt/.hdr file
 
 def find_raw_output():
-    """Find the stitched .raw output file (largest valid .raw)."""
+    """Find the stitched .raw output file matching _<X>x<Y>x<Z>.raw and exclude trace files."""
+    import re
     candidates = []
-    candidates.extend(glob.glob(f"{{SAMPLE_NAME}}*.raw"))
-    if not candidates:
-        candidates.extend(glob.glob("*.raw"))
-        
+    
+    # We look for all .raw files in the directory
+    for f in glob.glob("*.raw"):
+        # Ensure it has the _NxNxN size suffix
+        if re.search(r"_\d+x\d+x\d+\.raw$", f):
+            candidates.append(f)
+            
     if not candidates:
         return None
         
-    valid_candidates = [f for f in candidates if not any(x in f for x in ["defpoints", "refpoints", "gof"])]
+    # Exclude trace artifacts
+    valid_candidates = [f for f in candidates if not any(x in f for x in ["defpoints", "refpoints", "gof", "shifts"])]
     if not valid_candidates:
         valid_candidates = candidates
 
@@ -1349,7 +1354,10 @@ def main():
     output_path = "precomputed"
     target_spec = {{
         'driver': 'neuroglancer_precomputed',
-        'path': output_path,
+        'kvstore': {{
+            'driver': 'file',
+            'path': output_path,
+        }},
         'multiscale_metadata': {{
             'type': 'image',
             'data_type': dtype,
@@ -1388,14 +1396,57 @@ if __name__ == "__main__":
     with open(os.path.join(output_dir, "convert_to_neuroglancer.py"), "w") as f:
         f.write(script_content)
 
+    # -------------------------------------------------------------
+    # 2. Generate CORS Server Script (serve.py)
+    # -------------------------------------------------------------
+    serve_content = """#!/usr/bin/env python3
+import argparse
+from http.server import HTTPServer, SimpleHTTPRequestHandler
+
+class CORSRequestHandler(SimpleHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header('Access-Control-Allow-Origin', '*')
+        super().end_headers()
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='Start a local CORS-enabled web server.')
+    parser.add_argument('--port', type=int, default=8000, help='Port to serve on (default: 8000)')
+    args = parser.parse_args()
+    
+    print(f"\\n=========================================")
+    print(f" Serving Neuroglancer Data on port {args.port}")
+    print(f"=========================================")
+    print(f"1. Open Chrome/Firefox")
+    print(f"2. Go to: https://neuroglancer-demo.appspot.com/")
+    print(f"3. Add a new layer with Source: precomputed://http://localhost:{args.port}/precomputed")
+    print(f"\\nPress Ctrl+C to stop the server.")
+    
+    try:
+        HTTPServer(('localhost', args.port), CORSRequestHandler).serve_forever()
+    except KeyboardInterrupt:
+        print("\\nServer stopped.")
+"""
+    with open(os.path.join(output_dir, "serve.py"), "w") as f:
+        f.write(serve_content)
+
 def parse_alignment_points(file_path: str) -> Optional[np.ndarray]:
     """
-    Parses alignment point files (like defpoints or refpoints).
-    Typically these are text files with N lines, each having 3 coordinates (X, Y, Z).
+    Parses alignment point files.
+    - If .txt: Assumes N lines, each having 3 coordinates (X, Y, Z).
+    - If .raw: Assumes float32 flat array of vectors (typically displacement).
     Returns a numpy array of shape (N, 3) or None if parsing fails.
     """
     if not os.path.exists(file_path):
         return None
+        
+    if file_path.endswith('.raw'):
+        try:
+            data = np.fromfile(file_path, dtype=np.float32)
+            if len(data) > 0 and len(data) % 3 == 0:
+                return data.reshape(-1, 3)
+            return None
+        except:
+            return None
     
     try:
         # Try reading with numpy

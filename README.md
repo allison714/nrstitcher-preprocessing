@@ -88,21 +88,32 @@ For local stitching, you need the `pi2` software. Since this is not a public PyP
     *   **Requires**: `git` must be installed and available in your command prompt.
 
 ### Running the Stitcher
-1.  Navigate to the generated bundle folder (e.g., `MyDataset_local`).
+1.  Navigate to the generated bundle folder.
 2.  Double-click **`run_local.bat`** (Windows) or run `./run_local.sh` (Linux/Mac).
 3.  The script will:
-    *   Activate (or create) the `stitch_app` environment.
-    *   Check for `pi2`.
-    *   If missing, it will use the **embedded copy** or try to **auto-download** it.
+    *   Activate the `stitch_app` environment.
     *   Run the stitch command.
+    *   (Optional) Convert the output to Neuroglancer Precomputed format if selected.
+
+## Neuroglancer Visualization
+If you selected **Neuroglancer Precomputed** output, you can instantly view your 3D stitched volume in your browser:
+
+1. Open **Anaconda Prompt**.
+2. Navigate to your stitched output folder (e.g., `cd D:\StitchScratch\260224_local...`).
+3. Run the included server script:
+   ```bash
+   python serve.py
+   ```
+4. Open Chrome and go to [neuroglancer-demo.appspot.com](https://neuroglancer-demo.appspot.com/).
+5. Click the `+` icon in the top left and add your local Source: `precomputed://http://localhost:8000/precomputed`.
 
 ## Output
 The app creates a new folder containing:
 *   `stitch_settings.txt`: Configuration file.
 *   `dataset_manifest.json`: JSON record of settings.
 *   `run_local.bat` / `run_local.sh`: Intelligent execution scripts.
+*   `serve.py`: Local web server for Neuroglancer visualization.
 *   `tools/`: (If using Portable Bundle) Contains the embedded `pi2` package.
-*   `tiles/`: (Optional) Symlinked view of raw data.
 
 ## Troubleshooting
 

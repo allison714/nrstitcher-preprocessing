@@ -817,21 +817,28 @@ with tab_analytics:
     if st.button("Run Analytics"):
         import glob
         
-        def find_file(dir_path, pattern):
-            # Try root then trace/
-            for folder in [dir_path, os.path.join(dir_path, "trace")]:
-                if not os.path.exists(folder): continue
-                # Look for exact or fuzzy match, strictly requiring .txt to avoid .raw or other files
-                candidates = glob.glob(os.path.join(folder, f"*{pattern}*.txt"))
-                if candidates:
-                    # Sort to get the most specific or latest
-                    candidates.sort(key=os.path.getmtime, reverse=True)
-                    return candidates[0]
-            return None
-
-        def_path = find_file(analysis_dir, "defpoints")
-        ref_path = find_file(analysis_dir, "refpoints")
+        def_path = None
+        ref_path = None
         
+        # Search base and trace dirs
+        import re
+        for folder in [analysis_dir, os.path.join(analysis_dir, "trace")]:
+            if not os.path.exists(folder): continue
+            
+            raw_cands_def = glob.glob(os.path.join(folder, "*_defpoints_*.raw")) + glob.glob(os.path.join(folder, "*defpoints*.txt"))
+            raw_cands_ref = glob.glob(os.path.join(folder, "*_refpoints.txt")) + glob.glob(os.path.join(folder, "*refpoints*.txt"))
+            
+            # Filter out pairwise artifacts (e.g. 0-1, 23-24) and tile-specific shifts
+            cand_def = [f for f in raw_cands_def if not re.search(r'\d+-\d+', f) and "world_to_local" not in f]
+            cand_ref = [f for f in raw_cands_ref if not re.search(r'\d+-\d+', f) and "world_to_local" not in f]
+            
+            if cand_def and not def_path:
+                cand_def.sort(key=os.path.getmtime, reverse=True)
+                def_path = cand_def[0]
+            if cand_ref and not ref_path:
+                cand_ref.sort(key=os.path.getmtime, reverse=True)
+                ref_path = cand_ref[0]
+                
         if def_path and ref_path:
             st.info(f"Using: `{os.path.basename(def_path)}` & `{os.path.basename(ref_path)}`")
             def_pts = core.parse_alignment_points(def_path)
@@ -841,7 +848,12 @@ with tab_analytics:
                 if len(def_pts) != len(ref_pts):
                     st.error(f"Mismatch in point counts: Def={len(def_pts)}, Ref={len(ref_pts)}")
                 else:
-                    displacement = def_pts - ref_pts
+                    if def_path.endswith('.raw'):
+                        # .raw displacement fields provide the vectors directly
+                        displacement = def_pts
+                    else:
+                        displacement = def_pts - ref_pts
+                        
                     mag = np.linalg.norm(displacement, axis=1)
                     
                     st.write(f"📊 **Points Analyzed**: {len(def_pts)}")
@@ -850,14 +862,21 @@ with tab_analytics:
                     
                     import matplotlib.pyplot as plt
                     
+                    # Subsample if too many points to avoid browser lag
+                    step = max(1, len(def_pts) // 5000)
+                    plot_ref = ref_pts[::step]
+                    plot_disp = displacement[::step]
+                    plot_mag = mag[::step]
+                    
                     fig, ax = plt.subplots(figsize=(10, 8))
                     # Plot in XY plane (projecting Z)
-                    q = ax.quiver(ref_pts[:, 0], ref_pts[:, 1], displacement[:, 0], displacement[:, 1], 
-                                 mag, cmap='viridis', angles='xy', scale_units='xy', scale=1)
-                fig.colorbar(q, label='Displacement Magnitude (px)')
-                ax.set_title("Warping Displacement Field (XY Projection)")
-                ax.set_xlabel("X (pixels)")
-                ax.set_ylabel("Y (pixels)")
+                    q = ax.quiver(plot_ref[:, 0], plot_ref[:, 1], plot_disp[:, 0], plot_disp[:, 1], 
+                                 plot_mag, cmap='viridis', angles='xy', scale_units='xy', scale=1)
+                    fig.colorbar(q, label='Displacement Magnitude (px)')
+                    ax.set_title(f"Warping Displacement Field (XY Projection) {'(Subsampled)' if step > 1 else ''}")
+                    ax.set_xlabel("X (pixels)")
+                    ax.set_ylabel("Y (pixels)")
+
                 ax.invert_yaxis() # Origin at top-left for images
                 ax.grid(True, linestyle='--', alpha=0.3)
                 
@@ -865,8 +884,8 @@ with tab_analytics:
                 
                 st.success("Visualization generated! Viridis colors show magnitude (Purple=Low, Yellow=High).")
         else:
-            st.warning("⚠️ Could not find or parse `defpoints.txt` and `refpoints.txt` in the specified directory.")
-            st.info("Note: These files are generated *after* running the stitcher. Make sure the job has completed.")
+            st.warning("⚠️ Could not find global `defpoints` and `refpoints` in the specified directory.")
+            st.info("Note: Global warping fields are only generated by the **Full Quality (Non-Rigid)** preset (or Hybrid Mode). If you ran a purely rigid alignment, there is no non-linear warping data to visualize.")
 
 # --- Author Footer ---
 st.sidebar.markdown("---")
