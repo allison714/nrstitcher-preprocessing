@@ -202,8 +202,13 @@ if n_channels > 0:
     for i in range(n_channels):
         with cols[i % 4]:
             st.markdown(f"**Channel {i}**")
-            name = st.text_input("Name", key=f"name_{i}", placeholder="e.g. DAPI", label_visibility="collapsed")
-            wl = st.text_input("Wavelength", key=f"wl_{i}", placeholder="e.g. 488nm", label_visibility="collapsed")
+            
+            # Default values for Channel 0
+            default_name = "pan-stain" if i == 0 else ""
+            default_wl = "488nm" if i == 0 else ""
+            
+            name = st.text_input("Name", value=default_name, key=f"name_{i}", placeholder="e.g. DAPI", label_visibility="collapsed")
+            wl = st.text_input("Wavelength", value=default_wl, key=f"wl_{i}", placeholder="e.g. 488nm", label_visibility="collapsed")
             channel_meta.append((name, wl))
 
 # Validation of counts
@@ -774,6 +779,9 @@ if generate_btn:
         os.makedirs(output_dir, exist_ok=True)
         
         generate_manifest(manifest, output_dir)
+        
+        # Generate OME compliant metadata
+        core.generate_ome_metadata(manifest, output_dir, channel_meta)
         
         # Generate Tiles View FIRST if requested
         tiles_created_ok = False

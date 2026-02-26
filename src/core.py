@@ -993,6 +993,64 @@ date
             pass
 
 
+def generate_ome_metadata(manifest: DatasetManifest, output_dir: str, channel_meta: List[tuple]):
+    """
+    Generates a standard OME-structured metadata.txt file for down-stream processing
+    tools or repositories (e.g., Bio-Formats, OME-Zarr, QuPath).
+    """
+    meta_path = os.path.join(output_dir, "metadata.txt")
+    
+    with open(meta_path, "w", encoding='utf-8') as f:
+        f.write("=========================================================\n")
+        f.write("OME COMPLIANT METADATA EXPERIMENT EXPORT\n")
+        f.write("=========================================================\n\n")
+        
+        f.write("[Image]\n")
+        f.write(f"Name={manifest.dataset_name}\n")
+        f.write(f"SizeX={manifest.width_px}\n")
+        f.write(f"SizeY={manifest.height_px}\n")
+        f.write(f"SizeZ={manifest.z_slices}\n")
+        f.write(f"SizeC={manifest.n_channels}\n")
+        f.write("SizeT=1\n\n")
+        
+        f.write("[Pixels]\n")
+        f.write(f"PhysicalSizeX={manifest.voxel_size_x_um}\n")
+        f.write("PhysicalSizeXUnit=µm\n")
+        f.write(f"PhysicalSizeY={manifest.voxel_size_y_um}\n")
+        f.write("PhysicalSizeYUnit=µm\n")
+        f.write(f"PhysicalSizeZ={manifest.voxel_size_z_um}\n")
+        f.write("PhysicalSizeZUnit=µm\n")
+        f.write(f"SignificantBits={manifest.bit_depth}\n")
+        f.write(f"Type={'uint16' if manifest.bit_depth == 16 else 'uint8'}\n")
+        f.write("DimensionOrder=XYZCT\n\n")
+        
+        for ch_idx in range(manifest.n_channels):
+            f.write(f"[Channel {ch_idx}]\n")
+            
+            try:
+                name, wl = channel_meta[ch_idx]
+                if not name: name = f"Channel_{ch_idx}"
+                f.write(f"Name={name}\n")
+                if wl:
+                    f.write(f"EmissionWavelength={wl.replace('nm', '')}\n")
+                    f.write("EmissionWavelengthUnit=nm\n")
+            except IndexError:
+                f.write(f"Name=Channel_{ch_idx}\n")
+                
+            f.write("SamplesPerPixel=1\n\n")
+            
+        f.write("[Hardware]\n")
+        f.write("Microscope=Light Sheet\n")
+        f.write("Objective=Unknown\n\n")
+        
+        f.write("[Stitching]\n")
+        f.write(f"Grid_X={manifest.n_tiles_x}\n")
+        f.write(f"Grid_Y={manifest.n_tiles_y}\n")
+        f.write(f"Overlap_X_Percent={manifest.overlap_x}\n")
+        f.write(f"Overlap_Y_Percent={manifest.overlap_y}\n")
+        f.write(f"ScanOrder={manifest.scan_order}\n")
+
+
 def generate_slurm_script(manifest: DatasetManifest, slurm_params: Dict, output_dir: str, conda_config: Dict[str, str], convert_neuroglancer: bool = False):
     """
     Generates run_nrstitcher.sbatch targeting pi2/NRStitcher on Misha.
