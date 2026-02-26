@@ -582,6 +582,7 @@ def generate_local_script(manifest: DatasetManifest, output_dir: str, conda_conf
         except Exception as e:
             print(f"Failed to embed pi2: {e}") 
 
+
     # Determine Command
     if entrypoint_override:
         cmd_win = entrypoint_override
@@ -763,6 +764,51 @@ pause
 """
     with open(os.path.join(output_dir, "run_local.bat"), 'w') as f:
         f.write(bat_content)
+
+
+def get_tile_preview(file_path: str) -> Tuple[Optional[object], Optional[str], Optional[Dict]]:
+    """
+    Reads a TIFF file and returns a normalized numpy array for preview.
+    Returns: (image_array, error_message, stats_dict)
+    """
+    try:
+        import tifffile
+        import numpy as np
+        
+        # Read the first page/series
+        with tifffile.TiffFile(file_path) as tif:
+            page = tif.pages[0]
+            img = page.asarray()
+            
+        stats = {
+            'orig_min': float(np.min(img)),
+            'orig_max': float(np.max(img)),
+            'dtype': str(img.dtype),
+            'shape': str(img.shape)
+        }
+
+        # Normalize for display (robust percentile-based Auto B/C)
+        # Convert to float for calculation
+        img_f = img.astype(np.float32)
+        
+        # Robust min/max using percentiles
+        low = np.percentile(img_f, 1)
+        high = np.percentile(img_f, 99.9)
+        
+        # If flat or nearly flat, fall back to min/max
+        if high <= low:
+            low = np.min(img_f)
+            high = np.max(img_f)
+            
+        if high > low:
+            img_n = (img_f - low) / (high - low) * 255.0
+            img_n = np.clip(img_n, 0, 255).astype(np.uint8)
+        else:
+            img_n = np.zeros_like(img, dtype=np.uint8)
+                
+        return img_n, None, stats
+    except Exception as e:
+        return None, str(e), None
 
     # Bash detection logic
     detection_block = f"""
@@ -1429,6 +1475,212 @@ if __name__ == '__main__':
     with open(os.path.join(output_dir, "serve.py"), "w") as f:
         f.write(serve_content)
 
+
+def parse_tiff_stack(path: str) -> np.ndarray:
+    """Helper to read a multi-page TIFF stack into a 3D numpy array (Z, Y, X)."""
+    import tifffile
+    return tifffile.imread(path)
+
+# =============================================================================
+# INTENSITY DRIFT ANALYSIS (NEW)
+# =============================================================================
+def analyze_intensity_drift(manifest_path: str, stacks_dir: str) -> Optional[dict]:
+    """
+    Analyzes the 3D stacks in the bundle to detect time/acquisition-dependent
+    intensity drift. Uses a stratified subsampling approach for speed.
+    """
+    if not os.path.exists(manifest_path) or not os.path.exists(stacks_dir):
+        return None
+
+    import json
+    import glob
+    
+    with open(manifest_path, 'r') as f:
+        manifest = json.load(f)
+
+    # Reconstruct acquisition list from manifest metadata
+    # We assume 'files' list aligns with acquisition order
+    if 'files' not in manifest:
+        return None
+        
+    tiles_data = []
+    
+    # We need to map original file index to the stack file (which is named bin{X}_tile_{%03d}tif...)
+    # We will just parse the stacks_dir and extract indices, matching against manifest
+    stack_files = glob.glob(os.path.join(stacks_dir, "*.raw")) + glob.glob(os.path.join(stacks_dir, "*.tif"))
+    
+    if not stack_files:
+        return None
+
+    import re
+    
+    # Stratified Subsampling Params
+    NUM_Z_PLANES = 12
+    CROP_PERCENT = 0.70
+    
+    for stack_path in stack_files:
+        filename = os.path.basename(stack_path)
+        # Extract the tile index assuming format ...tile_000.tif_... or similar
+        match = re.search(r'tile_(\d+)', filename)
+        if not match:
+            continue
+            
+        acq_index = int(match.group(1))
+        
+        # Try to find position to determine column
+        # Fallback grid assumption if positions fail
+        col_index = acq_index  # Default fallback
+        if "positions" in manifest and acq_index < len(manifest["positions"]):
+            pos = manifest["positions"][acq_index]
+            # Assumes Y is sweeping faster (column) or vice versa.
+            # Usually, X determines the "column"
+            col_index = int(pos['x']) # Simplified heuristic based on coordinate value
+            
+        try:
+            if stack_path.endswith('.raw'):
+                # We need dimensions to safely read .raw
+                # Extract from filename e.g. _1600x1600x100.raw
+                dim_match = re.search(r'_(\d+)x(\d+)x(\d+)\.raw$', filename)
+                if dim_match:
+                    nx, ny, nz = int(dim_match.group(1)), int(dim_match.group(2)), int(dim_match.group(3))
+                    # Check dtype based on settings if possible, assume uint16 for stacked tiles
+                    vol = np.memmap(stack_path, dtype=np.uint16, mode='r', shape=(nz, ny, nx))
+                else:
+                    continue # Cannot read raw without dims
+            else:
+                vol = parse_tiff_stack(stack_path) # Assume stacked TIF
+
+            nz, ny, nx = vol.shape
+            
+            # Stratified Subsampling
+            z_indices = np.linspace(0, nz - 1, NUM_Z_PLANES, dtype=int)
+            
+            y_start = int(ny * ((1 - CROP_PERCENT) / 2))
+            y_end = int(y_start + ny * CROP_PERCENT)
+            x_start = int(nx * ((1 - CROP_PERCENT) / 2))
+            x_end = int(x_start + nx * CROP_PERCENT)
+            
+            # Extract planar slices
+            slices = vol[z_indices, y_start:y_end, x_start:x_end]
+            
+            # Subsample XY per plane (e.g. step by 4) to hit ~200k voxels total
+            step = 4
+            subsampled = slices[:, ::step, ::step].flatten()
+            
+            if len(subsampled) > 0:
+                p90 = float(np.percentile(subsampled, 90))
+                p50 = float(np.percentile(subsampled, 50))
+                p10 = float(np.percentile(subsampled, 10))
+                
+                tiles_data.append({
+                    'acq_index': acq_index,
+                    'col_index': col_index,
+                    'p90': p90,
+                    'p50': p50,
+                    'p10': p10,
+                    'filename': filename,
+                    'path': stack_path,
+                    'shape': (nz, ny, nx)
+                })
+                
+        except Exception as e:
+            print(f"Failed to analyze {filename}: {e}")
+            continue
+
+    if not tiles_data:
+        return None
+        
+    # Sort by acquisition index
+    tiles_data.sort(key=lambda x: x['acq_index'])
+    
+    # In a true column-serpentine scan, the 'col_index' might be difficult to guess dynamically 
+    # without exact stage coordinates. We group strictly by unique X-positions if possible,
+    # otherwise we default to the acq_index itself (treating every tile independently).
+    
+    # Calculate global metrics
+    p90_array = np.array([t['p90'] for t in tiles_data])
+    acq_array = np.array([t['acq_index'] for t in tiles_data])
+    
+    # Calculate correlation (using numpy to avoid scipy dependency issues)
+    corr = 0.0
+    if len(p90_array) > 1 and np.std(p90_array) > 0 and np.std(acq_array) > 0:
+        corr = float(np.corrcoef(acq_array, p90_array)[0, 1])
+    
+    pct_drop = 0
+    if len(p90_array) > 1 and p90_array[0] > 0:
+        pct_drop = ((p90_array[0] - p90_array[-1]) / p90_array[0]) * 100
+        
+    return {
+        'tiles': tiles_data,
+        'correlation': corr,
+        'percent_drop': pct_drop
+    }
+
+def generate_gain_corrected_stacks(manifest_path: str, drift_data: dict, source_stacks_dir: str, target_stacks_dir: str):
+    """
+    Reads the original stacked volumes, applies a gain normalization to counter intensity drift,
+    and writes them out to a new folder alongside a new `stitch_settings.txt` that points to them.
+    """
+    if not os.path.exists(target_stacks_dir):
+        os.makedirs(target_stacks_dir)
+        
+    tiles = drift_data['tiles']
+    
+    # We will normalize every tile so that its p90 matches the global maximum p90.
+    # We use a column median to smooth it out if they are grouped, otherwise smooth over local neighborhood
+    
+    p90_max = max(t['p90'] for t in tiles)
+    
+    withst = open(os.path.join(os.path.dirname(target_stacks_dir), "gain_corrected_stitch_settings.txt"), "w")
+    
+    for t in tiles:
+        # Calculate local target gain
+        # If we have distinct columns, we'd use the column median. 
+        # For a generic robust approach, we just use the tile's own p90 relative to max,
+        # bounded to prevent insane boosting (e.g. max gain of 3.0x)
+        
+        target_gain = p90_max / t['p90'] if t['p90'] > 0 else 1.0
+        target_gain = min(target_gain, 3.0) 
+        
+        source_path = t['path']
+        filename = t['filename']
+        target_path = os.path.join(target_stacks_dir, filename)
+        
+        nz, ny, nx = t['shape']
+        
+        # Read source
+        if source_path.endswith('.raw'):
+            vol = np.memmap(source_path, dtype=np.uint16, mode='r', shape=(nz, ny, nx))
+        else:
+            vol = parse_tiff_stack(source_path)
+            
+        # Apply gain in float32, then clip and convert back to uint16
+        print(f"Applying gain {target_gain:.2f}x to {filename}...")
+        
+        # Write to target (using physical rewrite for full compatibility)
+        # Chunk the conversion to avoid RAM blowing up
+        target_vol = np.memmap(target_path, dtype=np.uint16, mode='w+', shape=(nz, ny, nx))
+        
+        chunk_z = 10
+        for z in range(0, nz, chunk_z):
+            z_end = min(nz, z + chunk_z)
+            chunk = vol[z:z_end].astype(np.float32)
+            chunk = chunk * target_gain
+            np.clip(chunk, 0, 65535, out=chunk)
+            target_vol[z:z_end] = chunk.astype(np.uint16)
+            
+        target_vol.flush()
+        
+        # Write out the entry for the new stitch_settings.txt
+        # We need the original manifest position block
+        # For simplicity, we assume the user will just replace the `[positions]` block in their main file,
+        # but here we generate a complete minimal valid positional string.
+        file_path_for_pi2 = os.path.join("gain_corrected_stacks", filename).replace("\\", "/")
+        withst.write(f"file: {file_path_for_pi2}\\n")
+        
+    withst.close()
+
+
 def parse_alignment_points(file_path: str) -> Optional[np.ndarray]:
     """
     Parses alignment point files.
@@ -1467,3 +1719,164 @@ def parse_alignment_points(file_path: str) -> Optional[np.ndarray]:
             return np.array(points) if points else None
         except:
             return None
+
+
+def parse_local_shift_files(bundle_dir: str, subsample_step: int = 10, overlap_margin: float = 0.15) -> Optional[np.ndarray]:
+    """
+    Parses and aggregates all high-resolution `world_to_local_shifts` files in a bundle directory.
+    Downsamples the 3D grid and returns a 1D array of displacement magnitudes to prevent memory overload.
+    
+    Args:
+        bundle_dir: Path to the run bundle directory (often the 'trace' subfolder or root).
+        subsample_step: Voxel jump step to safely reduce millions of points to thousands.
+        overlap_margin: Fraction of the tile edge to keep (e.g. 0.15 for 15%). If 0, keeps entire tile.
+                        This strictly focuses the analysis on the overlap peripheries where pi2
+                        algorithms do their non-linear matching, rejecting interpolated rigid centers.
+        
+    Returns:
+        1D numpy array of absolute vector magnitudes (in pixels), or None if no files exist.
+    """
+    import glob
+    import re
+    
+    # Check trace folder first, then bundle root
+    candidates = []
+    for search_dir in [os.path.join(bundle_dir, "trace"), bundle_dir]:
+        if os.path.exists(search_dir):
+            # Glob for shift files natively output by recent pi2 versions
+            # They can look like: bin2_tile_000tif_world_to_local_shifts_162x162x12.raw
+            # or: stacks-tile_000tif_world_to_local_shifts_322x322x22.raw
+            candidates.extend(glob.glob(os.path.join(search_dir, "*world_to_local_shifts_*.raw")))
+            
+    if not candidates:
+        return None
+        
+    all_magnitudes = []
+    all_x = []
+    all_y = []
+    all_dx = []
+    all_dy = []
+    all_dz = []
+    worst_tiles = []
+    max_tile_size = 0
+    
+    # Try to extract fine_binning or binning from stitch_settings.txt
+    binning_val = 1.0
+    settings_path = os.path.join(bundle_dir, "stitch_settings.txt")
+    if os.path.exists(settings_path):
+        try:
+            with open(settings_path, 'r') as sf:
+                content = sf.read()
+                # Look for fine_binning or binning=
+                match_fine = re.search(r'fine_binning\s*=\s*([\d\.]+)', content)
+                match_bin = re.search(r'binning\s*=\s*([\d\.]+)', content)
+                if match_fine:
+                    binning_val = float(match_fine.group(1))
+                elif match_bin:
+                    binning_val = float(match_bin.group(1))
+        except Exception:
+            pass
+            
+    # Also check if it's explicitly named bin2, bin4 in the filename prefix
+    if binning_val == 1.0 and candidates:
+        if "bin2" in os.path.basename(candidates[0]): binning_val = 2.0
+        elif "bin4" in os.path.basename(candidates[0]): binning_val = 4.0
+    
+    for f in candidates:
+        # Extract dimensions from the filename (e.g., ..._162x162x12.raw)
+        match = re.search(r'_(\d+)x(\d+)x(\d+)\.raw$', f)
+        if not match:
+            continue
+            
+        nx, ny, nz = int(match.group(1)), int(match.group(2)), int(match.group(3))
+        expected_size = nx * ny * nz * 3
+        max_tile_size = max(max_tile_size, max(nx, ny))
+        
+        try:
+            # Read flat 32-bit float array
+            data = np.fromfile(f, dtype=np.float32)
+            
+            # Basic sanity check
+            if len(data) != expected_size:
+                # If size mismatches exactly, we skip this outlier
+                continue
+                
+            # Reshape into X, Y, Z, 3 spatial map
+            data_3d = data.reshape((nx, ny, nz, 3))
+            
+            # Generate 3D grid of coordinates to track vector origins
+            coords_x, coords_y, _ = np.mgrid[0:nx, 0:ny, 0:nz]
+            
+            # Normalize X and Y to [0.0, 1.0] representing generic tile spatial area
+            x_norm = coords_x / float(nx)
+            y_norm = coords_y / float(ny)
+            
+            if overlap_margin > 0:
+                edge_x = max(1, int(nx * overlap_margin))
+                edge_y = max(1, int(ny * overlap_margin))
+                
+                # Create a boolean mask indicating the overlapping edge regions
+                mask = np.zeros((nx, ny, nz), dtype=bool)
+                mask[:edge_x, :, :] = True      # Left overlap
+                mask[-edge_x:, :, :] = True     # Right overlap
+                mask[:, :edge_y, :] = True      # Bottom overlap
+                mask[:, -edge_y:, :] = True     # Top overlap
+                
+                # Subsample data and mask identically to save memory
+                sampled_data = data_3d[::subsample_step, ::subsample_step, ::subsample_step, :]
+                sampled_mask = mask[::subsample_step, ::subsample_step, ::subsample_step]
+                
+                sampled_x = x_norm[::subsample_step, ::subsample_step, ::subsample_step]
+                sampled_y = y_norm[::subsample_step, ::subsample_step, ::subsample_step]
+                
+                # Extract only the vectors inside the bounding overlap regions
+                sampled_vectors = sampled_data[sampled_mask]
+                filtered_x = sampled_x[sampled_mask]
+                filtered_y = sampled_y[sampled_mask]
+            else:
+                sampled_data = data_3d[::subsample_step, ::subsample_step, ::subsample_step, :]
+                sampled_vectors = sampled_data.reshape(-1, 3)
+                filtered_x = x_norm[::subsample_step, ::subsample_step, ::subsample_step].flatten()
+                filtered_y = y_norm[::subsample_step, ::subsample_step, ::subsample_step].flatten()
+            
+            # Subtract the global baseline translation (median shift of the tile)
+            # This isolates the true relative (non-linear) deformation vectors dx, dy, dz
+            baseline_shift = np.median(sampled_vectors, axis=0)
+            warping_vectors = sampled_vectors - baseline_shift
+            
+            # Calculate magnitude (vector length) of true non-rigid displacement
+            magnitudes = np.linalg.norm(warping_vectors, axis=-1)
+            
+            local_max = np.max(magnitudes) if len(magnitudes) > 0 else 0
+            worst_tiles.append((local_max, os.path.basename(f)))
+            
+            # Collect individual components
+            all_dx.append(warping_vectors[:, 0])
+            all_dy.append(warping_vectors[:, 1])
+            all_dz.append(warping_vectors[:, 2])
+            
+            # Accumulate into our master list
+            all_magnitudes.append(magnitudes)
+            all_x.append(filtered_x)
+            all_y.append(filtered_y)
+        except Exception as e:
+            print(f"Warning: Failed to parse {f}: {e}")
+            continue
+            
+    if all_magnitudes:
+        worst_tiles.sort(key=lambda x: x[0], reverse=True)
+        # Concatenate all tile magnitudes into one big statistical pool
+        return {
+            'magnitudes': np.concatenate(all_magnitudes),
+            'dx': np.concatenate(all_dx),
+            'dy': np.concatenate(all_dy),
+            'dz': np.concatenate(all_dz),
+            'x': np.concatenate(all_x),
+            'y': np.concatenate(all_y),
+            'worst_tiles': worst_tiles,
+            'max_tile_size': max_tile_size,
+            'overlap_margin': overlap_margin,
+            'binning_scale': binning_val
+        }
+        
+    return None
