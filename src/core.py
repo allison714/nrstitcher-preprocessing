@@ -993,7 +993,7 @@ date
             pass
 
 
-def generate_ome_metadata(manifest: DatasetManifest, output_dir: str, channel_meta: List[tuple]):
+def generate_ome_metadata(manifest: DatasetManifest, output_dir: str, channel_meta: List[tuple], is_pan_aslm: bool = False):
     """
     Generates a standard OME-structured metadata.txt file for down-stream processing
     tools or repositories (e.g., Bio-Formats, OME-Zarr, QuPath).
@@ -1022,17 +1022,28 @@ def generate_ome_metadata(manifest: DatasetManifest, output_dir: str, channel_me
         f.write("PhysicalSizeZUnit=µm\n")
         f.write(f"SignificantBits={manifest.bit_depth}\n")
         f.write(f"Type={'uint16' if manifest.bit_depth == 16 else 'uint8'}\n")
-        f.write("DimensionOrder=XYZCT\n\n")
+        f.write("DimensionOrder=XYZCT\n")
+        f.write("BigEndian=False\n")
+        f.write("Interleaved=False\n\n")
         
         for ch_idx in range(manifest.n_channels):
             f.write(f"[Channel {ch_idx}]\n")
             
             try:
-                name, wl = channel_meta[ch_idx]
+                # Attempt to unpack new 3-tuple (name, ex_wl, em_wl)
+                if len(channel_meta[ch_idx]) == 3:
+                    name, ex_wl, em_wl = channel_meta[ch_idx]
+                else:
+                    name, ex_wl = channel_meta[ch_idx]
+                    em_wl = ""
+                    
                 if not name: name = f"Channel_{ch_idx}"
                 f.write(f"Name={name}\n")
-                if wl:
-                    f.write(f"EmissionWavelength={wl.replace('nm', '')}\n")
+                if ex_wl:
+                    f.write(f"ExcitationWavelength={ex_wl.replace('nm', '')}\n")
+                    f.write("ExcitationWavelengthUnit=nm\n")
+                if em_wl:
+                    f.write(f"EmissionWavelength={em_wl.replace('nm', '')}\n")
                     f.write("EmissionWavelengthUnit=nm\n")
             except IndexError:
                 f.write(f"Name=Channel_{ch_idx}\n")
@@ -1040,8 +1051,35 @@ def generate_ome_metadata(manifest: DatasetManifest, output_dir: str, channel_me
             f.write("SamplesPerPixel=1\n\n")
             
         f.write("[Hardware]\n")
-        f.write("Microscope=Light Sheet\n")
-        f.write("Objective=Unknown\n\n")
+        if is_pan_aslm:
+            f.write("Microscope=pan-ASLM\n\n")
+            f.write("# Detection objective (forms the image on the camera)\n")
+            f.write("DetectionObjectiveManufacturer=Evident\n")
+            f.write("DetectionObjectiveModel=XLUMPLFLN20XW\n")
+            f.write("DetectionObjectiveMagnification=20\n")
+            f.write("DetectionObjectiveNA=1.0\n")
+            f.write("DetectionObjectiveImmersion=Water\n")
+            f.write("DetectionObjectiveType=Water-dipping\n")
+            f.write("DetectionObjectiveWorkingDistance_mm=2\n\n")
+            f.write("# Illumination objective (creates the sheet)\n")
+            f.write("IlluminationObjectiveManufacturer=ASI\n")
+            f.write("IlluminationObjectiveModel=54-12-8\n")
+            f.write("IlluminationObjectiveNA=0.64\n")
+            f.write("IlluminationObjectiveWorkingDistance_mm=10\n\n")
+            f.write("# Camera / detector\n")
+            f.write("DetectorType=sCMOS\n")
+            f.write("DetectorManufacturer=Teledyne Photometrics\n")
+            f.write("DetectorModel=Kinetix\n")
+            f.write("DetectorSensorPixels=3200x3200\n")
+            f.write("DetectorPixelSize=6.5\n")
+            f.write("DetectorPixelSizeUnit=µm\n\n")
+            f.write("# Detection emission filter + tube lens + magnification changer (optical train)\n")
+            f.write("EmissionFilter=ZET405/488/561/640mv2 (Chroma)\n")
+            f.write("TubeLens=SWTLU-C (Evident)\n")
+            f.write("MagnificationChanger=U-CA 1.6x (Evident)\n\n")
+        else:
+            f.write("Microscope=Light Sheet\n")
+            f.write("Objective=Unknown\n\n")
         
         f.write("[Stitching]\n")
         f.write(f"Grid_X={manifest.n_tiles_x}\n")

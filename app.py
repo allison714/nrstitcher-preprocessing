@@ -154,6 +154,11 @@ else:
 # --- Parameters Form ---
 st.header("2. Run Parameters")
 
+is_pan_aslm = st.checkbox("pan-ASLM Defaults", value=False, help="Auto-fills Scan Pattern (Column Serpentine), Voxel Size (0.203µm), Dimensions (3200px), and detailed hardware properties for the pan-ASLM system in the metadata output.")
+
+def_vox_xy = 0.203125 if is_pan_aslm else 0.200
+def_img_dim = 3200 if is_pan_aslm else width_px
+
 col1, col2, col3 = st.columns(3)
 
 with col1:
@@ -172,21 +177,22 @@ with col2:
     st.write("**Voxel Size (µm)**")
     vc1, vc2, vc3 = st.columns(3)
     with vc1:
-        voxel_x = st.number_input("X", value=0.200, format="%.3f")
+        voxel_x = st.number_input("X", value=def_vox_xy, format="%.6f")
     with vc2:
-        voxel_y = st.number_input("Y", value=0.200, format="%.3f")
+        voxel_y = st.number_input("Y", value=def_vox_xy, format="%.6f")
     with vc3:
         voxel_z = st.number_input("Z", value=0.200, format="%.3f")
     
 with col3:
     st.subheader("Image Specs (Auto-Detected)")
-    img_w = st.number_input("Width (px)", value=width_px)
-    img_h = st.number_input("Height (px)", value=height_px)
+    img_w = st.number_input("Width (px)", value=def_img_dim if is_pan_aslm else width_px)
+    img_h = st.number_input("Height (px)", value=def_img_dim if is_pan_aslm else height_px)
     img_bd = st.number_input("Bit Depth", value=bit_depth)
 
 col4, col5 = st.columns(2)
 with col4:
-    scan_order = st.selectbox("Scan Order", [e.value for e in ScanOrder], index=0, 
+    def_scan_order_idx = 0 if is_pan_aslm else 0
+    scan_order = st.selectbox("Scan Order", [e.value for e in ScanOrder], index=def_scan_order_idx, 
         help="**Column Serpentine (pan-ASLM):** X slow, Y fast. Columns alternate up/down.\n\n"
              "**Row Serpentine:** Y slow, X fast. Rows alternate left/right.\n\n"
              "**Raster:** Simple row-by-row, left to right.")
@@ -197,7 +203,9 @@ with col5:
 channel_meta = []
 if n_channels > 0:
     st.caption("Optional: Enter channel details for reference.")
-    # 4 channels per row max to fit 2 inputs
+    opt_em_wl = st.checkbox("Include Emission Wavelength Metadata (Adds dropdown)", value=False)
+    
+    # 4 channels per row max to fit inputs
     cols = st.columns(min(n_channels, 4))
     for i in range(n_channels):
         with cols[i % 4]:
@@ -205,11 +213,21 @@ if n_channels > 0:
             
             # Default values for Channel 0
             default_name = "pan-stain" if i == 0 else ""
-            default_wl = "488nm" if i == 0 else ""
+            default_ex_wl = "488nm" if i == 0 else ""
             
             name = st.text_input("Name", value=default_name, key=f"name_{i}", placeholder="e.g. DAPI", label_visibility="collapsed")
-            wl = st.text_input("Wavelength", value=default_wl, key=f"wl_{i}", placeholder="e.g. 488nm", label_visibility="collapsed")
-            channel_meta.append((name, wl))
+            ex_wl = st.text_input("Excitation Wavelength", value=default_ex_wl, key=f"ex_wl_{i}", placeholder="Excitation (e.g. 488nm)", label_visibility="collapsed")
+            
+            em_wl = ""
+            if opt_em_wl:
+                def_em_idx = 1 if i == 0 else 0
+                em_wl_sel = st.selectbox("Emission Wavelength", ["", "488nm", "561nm", "595nm", "642nm", "Custom..."], index=def_em_idx, key=f"em_wl_sel_{i}", label_visibility="collapsed")
+                if em_wl_sel == "Custom...":
+                    em_wl = st.text_input("Custom Emission", value="", key=f"em_wl_custom_{i}", placeholder="e.g. 750nm", label_visibility="collapsed")
+                else:
+                    em_wl = em_wl_sel
+                    
+            channel_meta.append((name, ex_wl, em_wl))
 
 # Validation of counts
 expected_total = n_tiles_x * n_tiles_y * z_slices * n_channels
@@ -484,8 +502,13 @@ with st.expander("🔎 Preview Tiles (Verify Data)", expanded=False):
             # Format mapping string with optional metadata
             meta_str = ""
             if c_idx < len(channel_meta):
-                name, wl = channel_meta[c_idx]
-                parts = [p for p in [name, wl] if p and p.strip()]
+                if len(channel_meta[c_idx]) == 3:
+                     name, ex_wl, em_wl = channel_meta[c_idx]
+                     parts = [p for p in [name, ex_wl, em_wl] if p and p.strip()]
+                else:
+                     name, wl = channel_meta[c_idx]
+                     parts = [p for p in [name, wl] if p and p.strip()]
+                     
                 if parts:
                     meta_str = f" (**{' - '.join(parts)}**)"
             
@@ -781,7 +804,7 @@ if generate_btn:
         generate_manifest(manifest, output_dir)
         
         # Generate OME compliant metadata
-        core.generate_ome_metadata(manifest, output_dir, channel_meta)
+        core.generate_ome_metadata(manifest, output_dir, channel_meta, is_pan_aslm)
         
         # Generate Tiles View FIRST if requested
         tiles_created_ok = False
