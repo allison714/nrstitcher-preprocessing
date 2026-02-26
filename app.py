@@ -29,6 +29,70 @@ st.markdown("""
 Generates configuration and scripts for stitching large datasets on Misha cluster (pi2/NRStitcher).
 """)
 
+# --- Dynamic Local PATH Injection ---
+# If lab users drop pi2 executables in these folders, auto-detect them
+local_bin_dirs = [
+    os.path.join(os.path.dirname(__file__), 'pi2-v4.5-win-no-opencl'),
+    os.path.join(os.path.dirname(__file__), 'bin'),
+    r"C:\pi2-v4.5-win-no-opencl",
+    r"D:\pi2-v4.5-win-no-opencl",
+    r"E:\pi2-v4.5-win-no-opencl",
+    r"F:\pi2-v4.5-win-no-opencl",
+    r"C:\nrstitcher",
+    r"D:\nrstitcher"
+]
+
+for d in local_bin_dirs:
+    if os.path.exists(d):
+        # We put it at the start so local executables take priority over system-wide ones
+        os.environ["PATH"] = d + os.pathsep + os.environ.get("PATH", "")
+
+# --- System Check ---
+st.sidebar.header("System Dependencies")
+deps_missing = False
+
+with st.sidebar.expander("Tool Availability", expanded=False):
+    # Conda
+    if shutil.which("conda"):
+        st.success("✅ **Conda** detected")
+    else:
+        deps_missing = True
+        st.error("⚠️ **Conda** missing")
+        st.caption("Install Miniconda and add its `condabin` folder to your Windows System PATH.")
+
+    # PI2 Engine and nr_stitcher.py
+    pi2_found = False
+    nrstitcher_found = False
+    
+    # 1. Check System PATH first
+    if shutil.which("pi2"):
+        pi2_found = True
+    
+    # 2. Check local_bin_dirs if not in PATH
+    for d in local_bin_dirs:
+        if os.path.exists(d):
+            if os.path.exists(os.path.join(d, "pi2.exe")) or os.path.exists(os.path.join(d, "pi2")):
+                pi2_found = True
+            if os.path.exists(os.path.join(d, "nr_stitcher.py")):
+                nrstitcher_found = True
+                
+    if pi2_found:
+        st.success("✅ **pi2 (Alignment API)** detected")
+    else:
+        deps_missing = True
+        st.error("⚠️ **pi2 (Alignment API)** missing")
+        st.caption("Place the `pi2-v4.5-win-no-opencl` folder in the project folder, or directly in the root of your `C:\\`, `D:\\`, `E:\\` drive.")
+        
+    if nrstitcher_found:
+        st.success("✅ **NRStitcher Script** detected")
+    else:
+        deps_missing = True
+        st.error("⚠️ **NRStitcher Script** missing")
+        st.caption("Ensure `nr_stitcher.py` is located alongside your pi2 installation in the `pi2-v4.5-win-no-opencl` folder.")
+            
+if deps_missing:
+    st.sidebar.warning("Missing dependencies may prevent script generation or background execution from working locally on this PC.", icon="⚠️")
+
 # --- Sidebar Inputs ---
 st.sidebar.header("Dataset Configuration")
 
@@ -942,7 +1006,14 @@ with exp_warping:
                 col2.metric("Mean Deformation Magnitude", fmt_val(np.mean(mags), voxel_x))
                 col3.metric("95th Percentile Magnitude", fmt_val(np.percentile(mags, 95), voxel_x))
                 
-                st.markdown("##### Component-Wise Drift Breakdown")
+                warping_stats_help = """
+**Understanding the Component Metrics:**
+
+*   **Mean Dir. Drift**: The average directional displacement across all overlaps. A value significantly different from zero indicates a systematic global shift along that axis (e.g., thermal stage drift or continuous scanner drag).
+*   **Max Dist.**: The absolute largest single deformation vector found. Useful for spotting isolated, severe alignment failures at specific seams.
+*   **p95 Dist.**: The 95th percentile of absolute displacements. A robust metric for evaluating the 'typical worst-case' warping required, entirely ignoring the extreme top 5% of outliers that might just be imaging noise or dust.
+"""
+                st.markdown("##### Component-Wise Drift Breakdown", help=warping_stats_help)
                 st.markdown("If one axis dominates, that points to systematic drift (e.g., stage or scan axis).")
                 
                 import pandas as pd
@@ -1184,6 +1255,9 @@ with exp_drift:
 *   **Upward slope overall** → gain/offset drift upward or illumination ramp.
 *   **Step changes** → settings changed mid-run, shutter/laser hiccup, auto-exposure, file-type mismatch, or chunked processing differences.
 *   **Color-separated bands** → column-specific illumination or shading correction issues; can also indicate scan-order interactions.
+
+**Robust Normalized Drift (S):**
+The metric `S = ln(p90) - ln(p50)` mathematically isolates true multiplicative illumination/gain drift from physical sample variations. By subtracting the log-median structural baseline (`p50`) from the log-peak signal proxy (`p90`), this metric cancels out fluctuations caused purely by "how much bright biological structure" happens to be inside a given tile.
 """
                         st.markdown("#### Raw vs. Normalized Intensity Drift", help=drift_help)
                         
