@@ -1370,6 +1370,87 @@ if __name__ == "__main__":
     with open(os.path.join(output_dir, "stack_tiles.py"), "w") as f:
         f.write(script_content)
 
+def generate_qc_config_script(manifest: DatasetManifest, output_dir: str):
+    """
+    Generates qc_config.py which parses dataset_manifest.json to provide
+    a single source of truth for geometry and units across all QC scripts.
+    """
+    
+    script_content = f'''"""
+QC Configuration Module
+Automatically aligns QC scripts with the master Dataset Manifest.
+DO NOT EDIT MANUALLY - This file relies on dataset_manifest.json
+"""
+import os
+import json
+
+MANIFEST_PATH = os.path.join(os.path.dirname(__file__), "dataset_manifest.json")
+
+def load_config():
+    if not os.path.exists(MANIFEST_PATH):
+        raise FileNotFoundError(f"Missing {MANIFEST_PATH}. Cannot load QC config.")
+    with open(MANIFEST_PATH, 'r') as f:
+        return json.load(f)
+
+# Load immediately so properties are available on import 
+try:
+    _manifest = load_config()
+except Exception as e:
+    # If script is moved completely out of context, fallback to safe defaults to avoid crash on import
+    print(f"Warning: QC Config could not load manifest: {e}")
+    _manifest = {{}}
+
+# Grid geometry
+n_tiles_x = _manifest.get("n_tiles_x", 1)
+n_tiles_y = _manifest.get("n_tiles_y", 1)
+overlap_x = _manifest.get("overlap_x", 0)
+overlap_y = _manifest.get("overlap_y", 0)
+scan_order = _manifest.get("scan_order", "Column Serpentine (pan-ASLM)")
+
+# Array dimension & metrics
+width_px = _manifest.get("width_px", 2048)
+height_px = _manifest.get("height_px", 2048)
+z_slices = _manifest.get("z_slices", 1)
+n_channels = _manifest.get("n_channels", 1)
+bit_depth = _manifest.get("bit_depth", 16)
+
+# Physical units
+voxel_size_x_um = _manifest.get("voxel_size_x_um", 0.2)
+voxel_size_y_um = _manifest.get("voxel_size_y_um", 0.2)
+voxel_size_z_um = _manifest.get("voxel_size_z_um", 1.0)
+
+
+def tile_idx_to_xy(tile_idx):
+    """
+    Maps a linear tile index to its spatial (col, row) grid coordinates 
+    based on the manifest's scan_order. Returns (col, row).
+    """
+    if scan_order == "Column Serpentine (pan-ASLM)":
+        col = tile_idx // n_tiles_y
+        row_in_col = tile_idx % n_tiles_y
+        if col % 2 != 0:
+            row = n_tiles_y - 1 - row_in_col
+        else:
+            row = row_in_col
+        return col, row
+        
+    elif scan_order == "Row Serpentine":
+        row = tile_idx // n_tiles_x
+        col_in_row = tile_idx % n_tiles_x
+        if row % 2 != 0:
+            col = n_tiles_x - 1 - col_in_row
+        else:
+            col = col_in_row
+        return col, row
+        
+    else:  # Raster
+        row = tile_idx // n_tiles_x
+        col = tile_idx % n_tiles_x
+        return col, row
+'''
+    with open(os.path.join(output_dir, "qc_config.py"), "w") as f:
+        f.write(script_content)
+
 def generate_ometiff_converter(manifest: DatasetManifest, output_dir: str):
     """
     [TABLED] Generates convert_to_ometiff.py script for post-processing.
@@ -1599,6 +1680,9 @@ def analyze_intensity_drift(manifest_path: str, stacks_dir: str) -> Optional[dic
     if 'files' not in manifest:
         return None
         
+    bit_depth = manifest.get('bit_depth', 16)
+    max_val = (1 << bit_depth) - 1
+        
     tiles_data = []
     
     # We need to map original file index to the stack file (which is named bin{X}_tile_{%03d}tif...)
@@ -1668,12 +1752,18 @@ def analyze_intensity_drift(manifest_path: str, stacks_dir: str) -> Optional[dic
                 p50 = float(np.percentile(subsampled, 50))
                 p10 = float(np.percentile(subsampled, 10))
                 
+                # Saturation metrics using native integer dtype mapping
+                sat_frac = float(np.mean(subsampled >= (max_val - 1)))
+                near_sat_frac = float(np.mean(subsampled >= (max_val - 16)))
+                
                 tiles_data.append({
                     'acq_index': acq_index,
                     'col_index': col_index,
                     'p90': p90,
                     'p50': p50,
                     'p10': p10,
+                    'sat_frac': sat_frac,
+                    'near_sat_frac': near_sat_frac,
                     'filename': filename,
                     'path': stack_path,
                     'shape': (nz, ny, nx)
@@ -1709,7 +1799,9 @@ def analyze_intensity_drift(manifest_path: str, stacks_dir: str) -> Optional[dic
     return {
         'tiles': tiles_data,
         'correlation': corr,
-        'percent_drop': pct_drop
+        'percent_drop': pct_drop,
+        'bit_depth': bit_depth,
+        'max_val': max_val
     }
 
 def generate_gain_corrected_stacks(manifest_path: str, drift_data: dict, source_stacks_dir: str, target_stacks_dir: str):
@@ -1853,6 +1945,7 @@ def parse_local_shift_files(bundle_dir: str, subsample_step: int = 10, overlap_m
     all_dx = []
     all_dy = []
     all_dz = []
+    all_tile = []
     worst_tiles = []
     max_tile_size = 0
     
@@ -1943,8 +2036,17 @@ def parse_local_shift_files(bundle_dir: str, subsample_step: int = 10, overlap_m
             # Calculate magnitude (vector length) of true non-rigid displacement
             magnitudes = np.linalg.norm(warping_vectors, axis=-1)
             
+            # Extract explicit tile_a_idx and tile_b_idx if present
+            match_tiles = re.findall(r'tile_(\d+)tif', os.path.basename(f))
+            if len(match_tiles) >= 2:
+                tile_pair_str = f"Tile {int(match_tiles[0])} <-> Tile {int(match_tiles[1])}"
+            elif len(match_tiles) == 1:
+                tile_pair_str = f"Tile {int(match_tiles[0])}"
+            else:
+                tile_pair_str = "Unknown Pair"
+                
             local_max = np.max(magnitudes) if len(magnitudes) > 0 else 0
-            worst_tiles.append((local_max, os.path.basename(f)))
+            worst_tiles.append((local_max, tile_pair_str, os.path.basename(f)))
             
             # Collect individual components
             all_dx.append(warping_vectors[:, 0])
@@ -1955,6 +2057,7 @@ def parse_local_shift_files(bundle_dir: str, subsample_step: int = 10, overlap_m
             all_magnitudes.append(magnitudes)
             all_x.append(filtered_x)
             all_y.append(filtered_y)
+            all_tile.append(np.full(len(magnitudes), os.path.basename(f)))
         except Exception as e:
             print(f"Warning: Failed to parse {f}: {e}")
             continue
@@ -1969,6 +2072,7 @@ def parse_local_shift_files(bundle_dir: str, subsample_step: int = 10, overlap_m
             'dz': np.concatenate(all_dz),
             'x': np.concatenate(all_x),
             'y': np.concatenate(all_y),
+            'source_tile': np.concatenate(all_tile),
             'worst_tiles': worst_tiles,
             'max_tile_size': max_tile_size,
             'overlap_margin': overlap_margin,

@@ -238,651 +238,650 @@ if curr_total != expected_total:
     st.error(f"Count Mismatch! Found {curr_total}, expected {expected_total}. Check parameters.")
 
 # --- Execution Config ---
-st.header("3. Execution Configuration")
+with st.expander("⚙️ Execution, Bundle Generation & Verification", expanded=False):
+    # --- Execution Config ---
+    st.header("3. Execution Configuration")
 
-execution_mode = st.radio(
-    "Target Environment",
-    ("Misha Cluster (Slurm)", "Local Workstation"),
-    index=1
-)
-
-# Initialize session state for Slurm params if not set
-if 'slurm_partition' not in st.session_state: st.session_state['slurm_partition'] = 'day'
-if 'slurm_time' not in st.session_state: st.session_state['slurm_time'] = '04:00:00'
-if 'slurm_cpus' not in st.session_state: st.session_state['slurm_cpus'] = 8
-if 'slurm_mem' not in st.session_state: st.session_state['slurm_mem'] = '64G'
-
-slurm_params = {}
-conda_config = {}
-
-st.subheader("Conda / pi2 Backend Configuration")
-with st.expander("Configure Backend Paths", expanded=True):
-    # Set defaults based on mode
-    if execution_mode == "Misha Cluster (Slurm)":
-        def_conda_sh = "~/miniconda3/etc/profile.d/conda.sh"
-        def_entry = "" # "auto" by default (leave empty)
-        def_env = "pi2_env"
-    else:
-        # Local defaults
-        def_conda_sh = r"C:\Users\allis\anaconda3\condabin\conda.BAT" 
-        def_entry = "" 
-        def_env = "stitch_app"
-
-    # Initialize from state if possible logic? No, simple inputs
-    c1, c2 = st.columns(2)
-    with c1:
-        conda_sh = st.text_input("Conda Init Script (conda.sh)", value=def_conda_sh, help="Path to conda.sh to source.")
-        env_name = st.text_input("Conda Environment Name", value=def_env)
-    with c2:
-        entrypoint = st.text_input("Entrypoint Override (Optional)", value=def_entry, help="Only set if auto-detection fails (e.g., full path to executable).")
-        
-        # Auto-detect local resource
-        resource_path = os.path.join(os.path.dirname(__file__), 'resources', 'pi2')
-        d_drive_path = r"D:\pi2-v4.5-win-no-opencl"
-        
-        if os.path.exists(resource_path) and os.listdir(resource_path):
-            default_pi2 = resource_path
-            st.success("✅ Found locally 'vendored' pi2 in `resources/pi2`.")
-        elif os.path.exists(d_drive_path):
-            default_pi2 = d_drive_path
-            st.success(f"✅ Auto-detected pi2 on D: drive: `{d_drive_path}`")
-        else:
-            default_pi2 = ""
-        
-        pi2_local_path = st.text_input(
-            "Path to 'pi2' Source/Binaries", 
-            value=default_pi2,
-            placeholder=r"C:\Users\allis\code\pi2", 
-            help="Folder containing the 'pi2' python package.\n\n"
-                 "⬇️ **Download**: `pi2-v4.5-win-no-opencl.zip` from:\n"
-                 "https://github.com/arttumiettinen/pi2/releases"
-        )
-            
-        # Auto detection helpers
-        if st.button("Auto-detect (Local)"):
-            import shutil
-            
-            # Check for conda
-            conda_path = shutil.which("conda")
-            if conda_path:
-                st.success(f"Found 'conda' at: {conda_path}")
-                
-                # List environments
-                try:
-                    import subprocess
-                    import json
-                    # Use full path or just 'conda'
-                    cmd = [conda_path, "env", "list", "--json"]
-                    result = subprocess.run(cmd, capture_output=True, text=True)
-                    if result.returncode == 0:
-                        env_data = json.loads(result.stdout)
-                        envs = [os.path.basename(p) for p in env_data.get('envs', [])]
-                        st.info(f"Available Environments: {', '.join(envs)}")
-                        st.caption("Copy one of these names into 'Conda Environment Name' if it contains pi2.")
-                except Exception as e:
-                    st.warning(f"Could not list environments: {e}")
-            else:
-                st.warning("'conda' command not found in PATH.")
-                
-            # Check for stitcher binaries
-            found = shutil.which("nrstitcher") or shutil.which("pi2")
-            if found:
-                st.success(f"Found stitcher binary: {found}")
-            else:
-                if default_pi2:
-                    st.info(f"✅ **Stitcher Status**: Ready (Found binary at `{default_pi2}`)")
-                else:
-                    try:
-                        import pi2
-                        st.info(f"✅ **Stitcher Status**: Installed in current env (`{pi2.__file__}`)")
-                    except ImportError:
-                        st.warning("⚠️ **Stitcher Status**: Not found in current env. (This is OK if you are generating a bundle for another machine or using the D: drive binary, but check the path above!)")
-                    except:
-                        pass
-
-    conda_config = {
-        'conda_sh': conda_sh,
-        'env_name': env_name,
-        'entrypoint': entrypoint
-    }
-
-if execution_mode == "Misha Cluster (Slurm)":
-    st.subheader("Slurm Resources")
-    
-    # Auto-Recommend Controls
-    col_auto, col_mode = st.columns(2)
-    with col_auto:
-        auto_recommend = st.checkbox("Auto-Recommend Resources?", value=False)
-    with col_mode:
-        rec_mode = st.radio("Run Mode", ["Production (day/week)", "Calibration (devel)"], index=0)
-        
-    if auto_recommend:
-        # Default speed since benchmark removed
-        default_speed = 100.0 
-            
-        # create temp manifest for estimation
-        tmp_manifest = DatasetManifest(
-            dataset_name=dataset_name, n_tiles_x=n_tiles_x, n_tiles_y=n_tiles_y, z_slices=z_slices, n_channels=n_channels,
-            overlap_x=int(overlap_x), overlap_y=int(overlap_y), voxel_size_x_um=voxel_x, voxel_size_y_um=voxel_y, voxel_size_z_um=voxel_z,
-            scan_order=scan_order, channel_order=channel_order, width_px=img_w, height_px=img_h, bit_depth=img_bd,
-            prefix_filter=prefix_filter, files=files
-        )
-        
-        from core import estimate_resources
-        mode_key = "production" if "Production" in rec_mode else "calibration"
-        # Passing default speed
-        est = estimate_resources(tmp_manifest, default_speed, mode=mode_key)
-        
-        # Update session state
-        st.session_state['slurm_partition'] = est['partition']
-        st.session_state['slurm_cpus'] = est['cpus']
-        st.session_state['slurm_mem'] = est['mem']
-        st.session_state['slurm_time'] = est['time']
-        
-        st.caption(f"Recommendation: {est['details']}")
-
-    scol1, scol2 = st.columns(2)
-    with scol1:
-        partition = st.text_input("Partition", key='slurm_partition')
-        time_limit = st.text_input("Time Limit", key='slurm_time')
-    with scol2:
-        cpus = st.number_input("CPUs per Task", min_value=1, key='slurm_cpus')
-        mem = st.text_input("Memory", key='slurm_mem')
-    
-    slurm_params = {
-        'partition': partition,
-        'time': time_limit,
-        'cpus': cpus,
-        'mem': mem
-    }
-else:
-    st.info("Local execution scripts (run_local.bat/.sh) will be generated.")
-
-# Alignment Settings
-st.subheader("Stitching Presets")
-run_preset = st.radio(
-    "Select Run Mode",
-    ["Full Quality (Non-Rigid)", "Fast Preview (Rigid)"],
-    index=0,
-    help="**Full Quality:** High-resolution stitching with non-linear warping. Best for final results.\n\n"
-         "**Fast Preview:** Lower resolution (binned) rigid-only alignment. Use this to quickly verify overlapping areas before a full run."
-)
-
-# Derive parameters based on preset
-if run_preset == "Full Quality (Non-Rigid)":
-    allow_warping = True
-    stitch_binning = 1
-else:
-    allow_warping = False
-    stitch_binning = 2  # Speed up coarse and fine steps
-
-# Output Format Selection
-st.subheader("Output Format")
-
-# Override default red multiselect tag color to friendly teal
-st.markdown("""
-<style>
-span[data-baseweb="tag"] {
-    background-color: #0d9488 !important;
-}
-</style>
-""", unsafe_allow_html=True)
-
-output_formats = st.multiselect(
-    "Select output format(s)",
-    ["Raw (.raw)", "Zarr", "Neuroglancer Precomputed"],
-    default=["Neuroglancer Precomputed"],
-    help=(
-        "**Raw (.raw):** Flat binary file — just voxel data, no headers. "
-        "Fastest to write, but you'll need to know the dimensions (X×Y×Z) to open it. "
-        "Useful if you plan to process the data further with custom scripts.\n\n"
-        "**Zarr:** Chunked, multiscale format. Great for cloud storage and lazy loading "
-        "of large volumes (e.g. with Napari or neuroglancer).\n\n"
-        "**Neuroglancer Precomputed:** Optimized format for 3D web visualization. "
-        "Requires the `tensorstore` Python package for conversion. Works seamlessly with "
-        "neuroglancer and other web viewers."
+    execution_mode = st.radio(
+        "Target Environment",
+        ("Misha Cluster (Slurm)", "Local Workstation"),
+        index=1
     )
-)
 
-# --- Generation ---
-st.header("4. Generate Bundle")
+    # Initialize session state for Slurm params if not set
+    if 'slurm_partition' not in st.session_state: st.session_state['slurm_partition'] = 'day'
+    if 'slurm_time' not in st.session_state: st.session_state['slurm_time'] = '04:00:00'
+    if 'slurm_cpus' not in st.session_state: st.session_state['slurm_cpus'] = 8
+    if 'slurm_mem' not in st.session_state: st.session_state['slurm_mem'] = '64G'
 
-# Tile Preview
-with st.expander("🔎 Preview Tiles (Verify Data)", expanded=False):
-    if not files:
-        st.info("No files loaded.")
-    else:
-        st.write(f"**Total files loaded:** `{len(files)}`")
-        
-        preview_tab1, preview_tab2 = st.tabs(["📷 Single Tile", "🔲 Grid View (up to 3×3)"])
-        
-        with preview_tab1:
-            # Replaced linear index with Tile/Z/Channel selectors
+    slurm_params = {}
+    conda_config = {}
+
+    st.subheader("Conda / pi2 Backend Configuration")
+    with st.expander("Configure Backend Paths", expanded=True):
+        # Set defaults based on mode
+        if execution_mode == "Misha Cluster (Slurm)":
+            def_conda_sh = "~/miniconda3/etc/profile.d/conda.sh"
+            def_entry = "" # "auto" by default (leave empty)
+            def_env = "pi2_env"
+        else:
+            # Local defaults
+            def_conda_sh = r"C:\Users\allis\anaconda3\condabin\conda.BAT" 
+            def_entry = "" 
+            def_env = "stitch_app"
+
+        # Initialize from state if possible logic? No, simple inputs
+        c1, c2 = st.columns(2)
+        with c1:
+            conda_sh = st.text_input("Conda Init Script (conda.sh)", value=def_conda_sh, help="Path to conda.sh to source.")
+            env_name = st.text_input("Conda Environment Name", value=def_env)
+        with c2:
+            entrypoint = st.text_input("Entrypoint Override (Optional)", value=def_entry, help="Only set if auto-detection fails (e.g., full path to executable).")
             
-            # 1. Tile Selector
-            n_tiles_total = n_tiles_x * n_tiles_y
-            pt_t = st.slider(
-                "Tile Index", 
-                min_value=0, 
-                max_value=n_tiles_total-1, 
-                value=0, 
-                step=1,
-                help=f"Select Tile (0 to {n_tiles_total-1}). Layout depends on Scan Order."
+            # Auto-detect local resource
+            resource_path = os.path.join(os.path.dirname(__file__), 'resources', 'pi2')
+            d_drive_path = r"D:\pi2-v4.5-win-no-opencl"
+            
+            if os.path.exists(resource_path) and os.listdir(resource_path):
+                default_pi2 = resource_path
+                st.success("✅ Found locally 'vendored' pi2 in `resources/pi2`.")
+            elif os.path.exists(d_drive_path):
+                default_pi2 = d_drive_path
+                st.success(f"✅ Auto-detected pi2 on D: drive: `{d_drive_path}`")
+            else:
+                default_pi2 = ""
+            
+            pi2_local_path = st.text_input(
+                "Path to 'pi2' Source/Binaries", 
+                value=default_pi2,
+                placeholder=r"C:\Users\allis\code\pi2", 
+                help="Folder containing the 'pi2' python package.\n\n"
+                     "⬇️ **Download**: `pi2-v4.5-win-no-opencl.zip` from:\n"
+                     "https://github.com/arttumiettinen/pi2/releases"
+            )
+                
+            # Auto detection helpers
+            if st.button("Auto-detect (Local)"):
+                import shutil
+                
+                # Check for conda
+                conda_path = shutil.which("conda")
+                if conda_path:
+                    st.success(f"Found 'conda' at: {conda_path}")
+                    
+                    # List environments
+                    try:
+                        import subprocess
+                        import json
+                        # Use full path or just 'conda'
+                        cmd = [conda_path, "env", "list", "--json"]
+                        result = subprocess.run(cmd, capture_output=True, text=True)
+                        if result.returncode == 0:
+                            env_data = json.loads(result.stdout)
+                            envs = [os.path.basename(p) for p in env_data.get('envs', [])]
+                            st.info(f"Available Environments: {', '.join(envs)}")
+                            st.caption("Copy one of these names into 'Conda Environment Name' if it contains pi2.")
+                    except Exception as e:
+                        st.warning(f"Could not list environments: {e}")
+                else:
+                    st.warning("'conda' command not found in PATH.")
+                    
+                # Check for stitcher binaries
+                found = shutil.which("nrstitcher") or shutil.which("pi2")
+                if found:
+                    st.success(f"Found stitcher binary: {found}")
+                else:
+                    if default_pi2:
+                        st.info(f"✅ **Stitcher Status**: Ready (Found binary at `{default_pi2}`)")
+                    else:
+                        try:
+                            import pi2
+                            st.info(f"✅ **Stitcher Status**: Installed in current env (`{pi2.__file__}`)")
+                        except ImportError:
+                            st.warning("⚠️ **Stitcher Status**: Not found in current env. (This is OK if you are generating a bundle for another machine or using the D: drive binary, but check the path above!)")
+                        except:
+                            pass
+
+        conda_config = {
+            'conda_sh': conda_sh,
+            'env_name': env_name,
+            'entrypoint': entrypoint
+        }
+
+    if execution_mode == "Misha Cluster (Slurm)":
+        st.subheader("Slurm Resources")
+        
+        # Auto-Recommend Controls
+        col_auto, col_mode = st.columns(2)
+        with col_auto:
+            auto_recommend = st.checkbox("Auto-Recommend Resources?", value=False)
+        with col_mode:
+            rec_mode = st.radio("Run Mode", ["Production (day/week)", "Calibration (devel)"], index=0)
+            
+        if auto_recommend:
+            # Default speed since benchmark removed
+            default_speed = 100.0 
+                
+            # create temp manifest for estimation
+            tmp_manifest = DatasetManifest(
+                dataset_name=dataset_name, n_tiles_x=n_tiles_x, n_tiles_y=n_tiles_y, z_slices=z_slices, n_channels=n_channels,
+                overlap_x=int(overlap_x), overlap_y=int(overlap_y), voxel_size_x_um=voxel_x, voxel_size_y_um=voxel_y, voxel_size_z_um=voxel_z,
+                scan_order=scan_order, channel_order=channel_order, width_px=img_w, height_px=img_h, bit_depth=img_bd,
+                prefix_filter=prefix_filter, files=files
             )
             
-            # 2. Z Selector
-            if z_slices > 1:
-                pt_z = st.slider("Z-Slice", 0, z_slices-1, 0, key="pt_z")
-            else:
-                pt_z = 0
-                
-            # 3. Channel Selector
-            if n_channels > 1:
-                pt_c = st.slider("Channel", 0, n_channels-1, 0, key="pt_c")
-            else:
-                pt_c = 0
+            from core import estimate_resources
+            mode_key = "production" if "Production" in rec_mode else "calibration"
+            # Passing default speed
+            est = estimate_resources(tmp_manifest, default_speed, mode=mode_key)
+            
+            # Update session state
+            st.session_state['slurm_partition'] = est['partition']
+            st.session_state['slurm_cpus'] = est['cpus']
+            st.session_state['slurm_mem'] = est['mem']
+            st.session_state['slurm_time'] = est['time']
+            
+            st.caption(f"Recommendation: {est['details']}")
 
-            # Calculate linear index
-            # Order: Tile -> Z -> Channel (Fastest)
-            # idx = t * (n_c * n_z) + z * n_c + c
-            preview_idx = pt_t * (n_channels * z_slices) + pt_z * n_channels + pt_c
+        scol1, scol2 = st.columns(2)
+        with scol1:
+            partition = st.text_input("Partition", key='slurm_partition')
+            time_limit = st.text_input("Time Limit", key='slurm_time')
+        with scol2:
+            cpus = st.number_input("CPUs per Task", min_value=1, key='slurm_cpus')
+            mem = st.text_input("Memory", key='slurm_mem')
+        
+        slurm_params = {
+            'partition': partition,
+            'time': time_limit,
+            'cpus': cpus,
+            'mem': mem
+        }
+    else:
+        st.info("Local execution scripts (run_local.bat/.sh) will be generated.")
+
+    # Alignment Settings
+    st.subheader("Stitching Presets")
+    run_preset = st.radio(
+        "Select Run Mode",
+        ["Full Quality (Non-Rigid)", "Fast Preview (Rigid)"],
+        index=0,
+        help="**Full Quality:** High-resolution stitching with non-linear warping. Best for final results.\n\n"
+             "**Fast Preview:** Lower resolution (binned) rigid-only alignment. Use this to quickly verify overlapping areas before a full run."
+    )
+
+    # Derive parameters based on preset
+    if run_preset == "Full Quality (Non-Rigid)":
+        allow_warping = True
+        stitch_binning = 1
+    else:
+        allow_warping = False
+        stitch_binning = 2  # Speed up coarse and fine steps
+
+    # Output Format Selection
+    st.subheader("Output Format")
+
+    # Override default red multiselect tag color to friendly teal
+    st.markdown("""
+    <style>
+    span[data-baseweb="tag"] {
+        background-color: #0d9488 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
+
+    output_formats = st.multiselect(
+        "Select output format(s)",
+        ["Raw (.raw)", "Zarr", "Neuroglancer Precomputed"],
+        default=["Neuroglancer Precomputed"],
+        help=(
+            "**Raw (.raw):** Flat binary file — just voxel data, no headers. "
+            "Fastest to write, but you'll need to know the dimensions (X×Y×Z) to open it. "
+            "Useful if you plan to process the data further with custom scripts.\n\n"
+            "**Zarr:** Chunked, multiscale format. Great for cloud storage and lazy loading "
+            "of large volumes (e.g. with Napari or neuroglancer).\n\n"
+            "**Neuroglancer Precomputed:** Optimized format for 3D web visualization. "
+            "Requires the `tensorstore` Python package for conversion. Works seamlessly with "
+            "neuroglancer and other web viewers."
+        )
+    )
+
+    # --- Generation ---
+    st.header("4. Generate Bundle")
+
+    # Tile Preview
+    with st.expander("🔎 Preview Tiles (Verify Data)", expanded=False):
+        if not files:
+            st.info("No files loaded.")
+        else:
+            st.write(f"**Total files loaded:** `{len(files)}`")
             
-            # Bounds check
-            if preview_idx < 0 or preview_idx >= len(files):
-                st.error(f"Calculated index {preview_idx} is out of bounds (0-{len(files)-1}). Check parameters.")
-                st.stop()
+            preview_tab1, preview_tab2 = st.tabs(["📷 Single Tile", "🔲 Grid View (up to 3×3)"])
             
-            selected_file = files[preview_idx]
-            full_path = os.path.join(data_path, selected_file)
-            
-            # Calc metadata (redundant check, but good for display)
-            t_idx, z_idx, c_idx = map_index(preview_idx, n_channels, z_slices)
-            st.write(f"**Filename:** `{selected_file}`")
-            
-            # Format mapping string with optional metadata
-            meta_str = ""
-            if c_idx < len(channel_meta):
-                if len(channel_meta[c_idx]) == 3:
-                     name, ex_wl, em_wl = channel_meta[c_idx]
-                     parts = [p for p in [name, ex_wl, em_wl] if p and p.strip()]
+            with preview_tab1:
+                # Replaced linear index with Tile/Z/Channel selectors
+                
+                # 1. Tile Selector
+                n_tiles_total = n_tiles_x * n_tiles_y
+                pt_t = st.slider(
+                    "Tile Index", 
+                    min_value=0, 
+                    max_value=n_tiles_total-1, 
+                    value=0, 
+                    step=1,
+                    help=f"Select Tile (0 to {n_tiles_total-1}). Layout depends on Scan Order."
+                )
+                
+                # 2. Z Selector
+                if z_slices > 1:
+                    pt_z = st.slider("Z-Slice", 0, z_slices-1, 0, key="pt_z")
                 else:
-                     name, wl = channel_meta[c_idx]
-                     parts = [p for p in [name, wl] if p and p.strip()]
-                     
-                if parts:
-                    meta_str = f" (**{' - '.join(parts)}**)"
+                    pt_z = 0
+                    
+                # 3. Channel Selector
+                if n_channels > 1:
+                    pt_c = st.slider("Channel", 0, n_channels-1, 0, key="pt_c")
+                else:
+                    pt_c = 0
+
+                # Calculate linear index
+                # Order: Tile -> Z -> Channel (Fastest)
+                # idx = t * (n_c * n_z) + z * n_c + c
+                preview_idx = pt_t * (n_channels * z_slices) + pt_z * n_channels + pt_c
+                
+                # Bounds check
+                if preview_idx < 0 or preview_idx >= len(files):
+                    st.error(f"Calculated index {preview_idx} is out of bounds (0-{len(files)-1}). Check parameters.")
+                    st.stop()
+                
+                selected_file = files[preview_idx]
+                full_path = os.path.join(data_path, selected_file)
+                
+                # Calc metadata (redundant check, but good for display)
+                t_idx, z_idx, c_idx = map_index(preview_idx, n_channels, z_slices)
+                st.write(f"**Filename:** `{selected_file}`")
+                
+                # Format mapping string with optional metadata
+                meta_str = ""
+                if c_idx < len(channel_meta):
+                    if len(channel_meta[c_idx]) == 3:
+                         name, ex_wl, em_wl = channel_meta[c_idx]
+                         parts = [p for p in [name, ex_wl, em_wl] if p and p.strip()]
+                    else:
+                         name, wl = channel_meta[c_idx]
+                         parts = [p for p in [name, wl] if p and p.strip()]
+                         
+                    if parts:
+                        meta_str = f" (**{' - '.join(parts)}**)"
+                
+                st.markdown(f"""
+                **Mapping Indices:**
+                *   **Tile (XY)**: `{t_idx}`
+                *   **Z-Slice**: `{z_idx}`
+                *   **Channel**: `{c_idx}` {meta_str}
+                """)
+                
+                if os.path.exists(full_path):
+                    from core import get_tile_preview
+                    import importlib
+                    import core as _core_mod
+                    importlib.reload(_core_mod)
+                    from core import get_tile_preview
+                    
+                    img, err, stats = get_tile_preview(full_path)
+                    
+                    if img is not None:
+                        st.image(img, caption=f"Preview (Auto B/C) - {selected_file}", use_container_width=True, clamp=True)
+                        if stats:
+                            st.caption(f"Stats: Min={stats['orig_min']:.1f}, Max={stats['orig_max']:.1f}, Type={stats['dtype']}")
+                    else:
+                        st.error(f"Could not load image: {err}")
+                else:
+                    st.error("File not found on disk.")
             
-            st.markdown(f"""
-            **Mapping Indices:**
-            *   **Tile (XY)**: `{t_idx}`
-            *   **Z-Slice**: `{z_idx}`
-            *   **Channel**: `{c_idx}` {meta_str}
-            """)
-            
-            if os.path.exists(full_path):
+            with preview_tab2:
+                # Grid View - up to 3x3 tiles
+                grid_cols_count = min(3, n_tiles_x)
+                grid_rows_count = min(3, n_tiles_y)
+                
+                # Layout: Left Column (Controls) | Right Column (Mini-Map)
+                layout_cols = st.columns([1, 1])
+                
+                # Initialize variable for safety
+                grid_offset_x = 0
+                grid_offset_y = 0
+                grid_scan_order = ScanOrder.COL_SERPENTINE.value
+                
+                # --- LEFT COLUMN: Controls ---
+                with layout_cols[0]:
+                    st.write(f"Showing **{grid_cols_count}×{grid_rows_count}** tile grid (of {n_tiles_x}×{n_tiles_y} total)")
+                    
+                    if n_channels > 1:
+                        grid_ch = st.slider("Channel", min_value=0, max_value=n_channels-1, value=0, key="grid_ch")
+                    else:
+                        grid_ch = 0
+                        st.caption("Channel: 0 (single)")
+                    
+                    if z_slices > 1:
+                        grid_z = st.slider("Z-Slice", min_value=0, max_value=z_slices-1, value=z_slices // 2, key="grid_z")
+                    else:
+                        grid_z = 0
+                        st.caption("Z-Slice: 0 (single)")
+                        
+                    # Offsets - X
+                    if n_tiles_x > grid_cols_count:
+                        grid_offset_x = st.slider("Start at Tile X", min_value=0, max_value=max(0, n_tiles_x - grid_cols_count), value=0, key="grid_ox")
+                    
+                    # Offsets - Y (Under X)
+                    if n_tiles_y > grid_rows_count:
+                        grid_offset_y = st.slider("Start at Tile Y", min_value=0, max_value=max(0, n_tiles_y - grid_rows_count), value=0, key="grid_oy")
+                    
+                    # Scan Order (Half Size)
+                    sub_cols = st.columns(2)
+                    with sub_cols[0]:
+                        all_orders = [e.value for e in ScanOrder]
+                        curr_order_idx = all_orders.index(scan_order) if scan_order in all_orders else 0
+                        grid_scan_order = st.selectbox(
+                            "Scan Order (Preview)", 
+                            all_orders, 
+                            index=curr_order_idx,
+                            key="grid_order_select",
+                            help="Test scan orders."
+                        )
+                
+                # --- RIGHT COLUMN: Mini-Map ---
+                with layout_cols[1]:
+                    if n_tiles_x > 0 and n_tiles_y > 0:
+                        try:
+                            import matplotlib.pyplot as plt
+                            import matplotlib.patches as patches
+                            
+                            # Use variable directly (defined in Left Col)
+                            # Use variable directly (defined in Left Col)
+                            cur_oy = grid_offset_y
+                            
+                            # Resize: User requested significantly bigger (roughly 2.5x original or bigger).
+                            # We remove sub-columns and let it fill the right column (50% page width).
+                            
+                            # create figure - large
+                            fig, ax = plt.subplots(figsize=(6, 5))
+                            # Inverted colors
+                            fig.patch.set_facecolor('black')
+                            ax.set_facecolor('black')
+                            
+                            ax.set_xlim(-0.5, n_tiles_x - 0.5)
+                            ax.set_ylim(-0.5, n_tiles_y - 0.5)
+                            ax.set_aspect('equal')
+                            # Remove axes/titles
+                            ax.axis('off')
+                            
+                            # Grid dots (Grey/Dim)
+                            all_x = []
+                            all_y = []
+                            for y in range(n_tiles_y):
+                                for x in range(n_tiles_x):
+                                    all_x.append(x)
+                                    all_y.append(y)
+                            ax.scatter(all_x, all_y, c='#666666', marker='s', s=100) # Lighter grey dots
+                            
+                            # Current Window (Green Highlight)
+                            sel_w = min(3, n_tiles_x - grid_offset_x)
+                            # Ensure window doesn't exceed bounds visually
+                            
+                            # Highlight active window tiles
+                            act_x = []
+                            act_y = []
+                            for row_i in range(min(3, n_tiles_y)):
+                                for col_i in range(min(3, n_tiles_x)):
+                                        gx = grid_offset_x + col_i
+                                        gy = cur_oy + row_i
+                                        if gx < n_tiles_x and gy < n_tiles_y:
+                                            act_x.append(gx)
+                                            act_y.append(gy)
+                            ax.scatter(act_x, act_y, c='#22c55e', marker='s', s=100) # Green dots
+                            
+                            st.pyplot(fig, use_container_width=True) # Fills the column
+                            
+                        except ImportError:
+                            st.warning("Install `matplotlib` for map.")
+
+                # Helper: tile_idx + z + ch -> linear file index
+                def tile_to_file_idx(tile_idx, z, ch, n_ch, n_z):
+                    return tile_idx * (n_ch * n_z) + z * n_ch + ch
+                
+                # Lazy-load preview function
                 from core import get_tile_preview
                 import importlib
                 import core as _core_mod
                 importlib.reload(_core_mod)
-                from core import get_tile_preview
+                from core import get_tile_preview, xy_to_tile_idx # Ensure xy_to_tile_idx is imported
                 
-                img, err, stats = get_tile_preview(full_path)
-                
-                if img is not None:
-                    st.image(img, caption=f"Preview (Auto B/C) - {selected_file}", use_container_width=True, clamp=True)
-                    if stats:
-                        st.caption(f"Stats: Min={stats['orig_min']:.1f}, Max={stats['orig_max']:.1f}, Type={stats['dtype']}")
-                else:
-                    st.error(f"Could not load image: {err}")
-            else:
-                st.error("File not found on disk.")
-        
-        with preview_tab2:
-            # Grid View - up to 3x3 tiles
-            grid_cols_count = min(3, n_tiles_x)
-            grid_rows_count = min(3, n_tiles_y)
-            
-            # Layout: Left Column (Controls) | Right Column (Mini-Map)
-            layout_cols = st.columns([1, 1])
-            
-            # Initialize variable for safety
-            grid_offset_x = 0
-            grid_offset_y = 0
-            grid_scan_order = ScanOrder.COL_SERPENTINE.value
-            
-            # --- LEFT COLUMN: Controls ---
-            with layout_cols[0]:
-                st.write(f"Showing **{grid_cols_count}×{grid_rows_count}** tile grid (of {n_tiles_x}×{n_tiles_y} total)")
-                
-                if n_channels > 1:
-                    grid_ch = st.slider("Channel", min_value=0, max_value=n_channels-1, value=0, key="grid_ch")
-                else:
-                    grid_ch = 0
-                    st.caption("Channel: 0 (single)")
-                
-                if z_slices > 1:
-                    grid_z = st.slider("Z-Slice", min_value=0, max_value=z_slices-1, value=z_slices // 2, key="grid_z")
-                else:
-                    grid_z = 0
-                    st.caption("Z-Slice: 0 (single)")
+                # -- Render Composite Grid (Pixel Perfect) --
+                try:
+                    from PIL import Image, ImageDraw, ImageFont
                     
-                # Offsets - X
-                if n_tiles_x > grid_cols_count:
-                    grid_offset_x = st.slider("Start at Tile X", min_value=0, max_value=max(0, n_tiles_x - grid_cols_count), value=0, key="grid_ox")
-                
-                # Offsets - Y (Under X)
-                if n_tiles_y > grid_rows_count:
-                    grid_offset_y = st.slider("Start at Tile Y", min_value=0, max_value=max(0, n_tiles_y - grid_rows_count), value=0, key="grid_oy")
-                
-                # Scan Order (Half Size)
-                sub_cols = st.columns(2)
-                with sub_cols[0]:
-                    all_orders = [e.value for e in ScanOrder]
-                    curr_order_idx = all_orders.index(scan_order) if scan_order in all_orders else 0
-                    grid_scan_order = st.selectbox(
-                        "Scan Order (Preview)", 
-                        all_orders, 
-                        index=curr_order_idx,
-                        key="grid_order_select",
-                        help="Test scan orders."
-                    )
-            
-            # --- RIGHT COLUMN: Mini-Map ---
-            with layout_cols[1]:
-                if n_tiles_x > 0 and n_tiles_y > 0:
-                    try:
-                        import matplotlib.pyplot as plt
-                        import matplotlib.patches as patches
-                        
-                        # Use variable directly (defined in Left Col)
-                        # Use variable directly (defined in Left Col)
-                        cur_oy = grid_offset_y
-                        
-                        # Resize: User requested significantly bigger (roughly 2.5x original or bigger).
-                        # We remove sub-columns and let it fill the right column (50% page width).
-                        
-                        # create figure - large
-                        fig, ax = plt.subplots(figsize=(6, 5))
-                        # Inverted colors
-                        fig.patch.set_facecolor('black')
-                        ax.set_facecolor('black')
-                        
-                        ax.set_xlim(-0.5, n_tiles_x - 0.5)
-                        ax.set_ylim(-0.5, n_tiles_y - 0.5)
-                        ax.set_aspect('equal')
-                        # Remove axes/titles
-                        ax.axis('off')
-                        
-                        # Grid dots (Grey/Dim)
-                        all_x = []
-                        all_y = []
-                        for y in range(n_tiles_y):
-                            for x in range(n_tiles_x):
-                                all_x.append(x)
-                                all_y.append(y)
-                        ax.scatter(all_x, all_y, c='#666666', marker='s', s=100) # Lighter grey dots
-                        
-                        # Current Window (Green Highlight)
-                        sel_w = min(3, n_tiles_x - grid_offset_x)
-                        # Ensure window doesn't exceed bounds visually
-                        
-                        # Highlight active window tiles
-                        act_x = []
-                        act_y = []
-                        for row_i in range(min(3, n_tiles_y)):
-                            for col_i in range(min(3, n_tiles_x)):
-                                    gx = grid_offset_x + col_i
-                                    gy = cur_oy + row_i
-                                    if gx < n_tiles_x and gy < n_tiles_y:
-                                        act_x.append(gx)
-                                        act_y.append(gy)
-                        ax.scatter(act_x, act_y, c='#22c55e', marker='s', s=100) # Green dots
-                        
-                        st.pyplot(fig, use_container_width=True) # Fills the column
-                        
-                    except ImportError:
-                        st.warning("Install `matplotlib` for map.")
-
-            # Helper: tile_idx + z + ch -> linear file index
-            def tile_to_file_idx(tile_idx, z, ch, n_ch, n_z):
-                return tile_idx * (n_ch * n_z) + z * n_ch + ch
-            
-            # Lazy-load preview function
-            from core import get_tile_preview
-            import importlib
-            import core as _core_mod
-            importlib.reload(_core_mod)
-            from core import get_tile_preview, xy_to_tile_idx # Ensure xy_to_tile_idx is imported
-            
-            # -- Render Composite Grid (Pixel Perfect) --
-            try:
-                from PIL import Image, ImageDraw, ImageFont
-                
-                # We need the first valid image to know dimensions
-                first_valid = None
-                
-                # Pre-scan for first valid image
-                # Just check T0? Or iterate?
-                # Let's assume standard size from first available.
-                # Actually we can just load them on the fly.
-                
-                # To determine canvas size, we need W/H.
-                # Let's try to load the very first tile in the window:
-                # (grid_offset_x, (grid_offset_y + grid_rows_count - 1)) etc?
-                # Simpler: just loop and load all into a dict first.
-                
-                grid_images = {} # Key: (row, col) -> Image
-                tile_w, tile_h = 0, 0
-                
-                for row in range(grid_rows_count):
-                    gy = (grid_offset_y + grid_rows_count - 1) - row
-                    for col in range(grid_cols_count):
-                        gx = grid_offset_x + col
-                        
-                        tile_idx = xy_to_tile_idx(gx, gy, n_tiles_x, n_tiles_y, grid_scan_order)
-                        file_idx = tile_to_file_idx(tile_idx, grid_z, grid_ch, n_channels, z_slices)
-                        
-                        if file_idx < len(files):
-                            fpath = os.path.join(data_path, files[file_idx])
-                            if os.path.exists(fpath):
-                                img_arr, _, _ = get_tile_preview(fpath) # Returns numpy array (RGB or Gray)
-                                if img_arr is not None:
-                                    # Convert numpy to PIL
-                                    # Check limits
-                                    pil_img = Image.fromarray(img_arr)
-                                    grid_images[(row, col)] = (pil_img, tile_idx)
-                                    if tile_w == 0:
-                                        tile_w, tile_h = pil_img.size
-                
-                if tile_w > 0 and tile_h > 0:
-                    # Calculate Canvas with Overlap
-                    # Overlap is percentage of size? User inputs overlap_x (float) e.g. 10.0
-                    ov_x_px = int(tile_w * (overlap_x / 100.0))
-                    ov_y_px = int(tile_h * (overlap_y / 100.0))
+                    # We need the first valid image to know dimensions
+                    first_valid = None
                     
-                    # Canvas Size
-                    # Width = (W * Cols) - (Overlap * (Cols-1))
-                    canvas_w = (tile_w * grid_cols_count) - (ov_x_px * (grid_cols_count - 1))
-                    canvas_h = (tile_h * grid_rows_count) - (ov_y_px * (grid_rows_count - 1))
+                    # Pre-scan for first valid image
+                    # Just check T0? Or iterate?
+                    # Let's assume standard size from first available.
+                    # Actually we can just load them on the fly.
                     
-                    # Ensure positive (overlap < 100%)
-                    canvas_w = max(canvas_w, tile_w)
-                    canvas_h = max(canvas_h, tile_h)
+                    # To determine canvas size, we need W/H.
+                    # Let's try to load the very first tile in the window:
+                    # (grid_offset_x, (grid_offset_y + grid_rows_count - 1)) etc?
+                    # Simpler: just loop and load all into a dict first.
                     
-                    composite = Image.new('RGB', (canvas_w, canvas_h), (0, 0, 0))
-                    draw = ImageDraw.Draw(composite)
+                    grid_images = {} # Key: (row, col) -> Image
+                    tile_w, tile_h = 0, 0
                     
                     for row in range(grid_rows_count):
+                        gy = (grid_offset_y + grid_rows_count - 1) - row
                         for col in range(grid_cols_count):
-                            if (row, col) in grid_images:
-                                img, tidx = grid_images[(row, col)]
-                                
-                                # Position
-                                # x = col * (W - Overlap)
-                                pos_x = col * (tile_w - ov_x_px)
-                                pos_y = row * (tile_h - ov_y_px)
-                                
-                                composite.paste(img, (pos_x, pos_y))
-                                
-                                # Draw Text
-                                txt = f"T{tidx}"
-                                # Default font
-                                # Draw Top-Left with shadow for visibility
-                                txt_pos = (pos_x + 5, pos_y + 5)
-                                draw.text((txt_pos[0]+1, txt_pos[1]+1), txt, fill="black")
-                                draw.text(txt_pos, txt, fill="white")
-                                
-                    st.image(composite, caption="Rough preview, not the final stitch", width="stretch")
-                else:
-                    st.warning("No valid images found in this grid view region.")
+                            gx = grid_offset_x + col
+                            
+                            tile_idx = xy_to_tile_idx(gx, gy, n_tiles_x, n_tiles_y, grid_scan_order)
+                            file_idx = tile_to_file_idx(tile_idx, grid_z, grid_ch, n_channels, z_slices)
+                            
+                            if file_idx < len(files):
+                                fpath = os.path.join(data_path, files[file_idx])
+                                if os.path.exists(fpath):
+                                    img_arr, _, _ = get_tile_preview(fpath) # Returns numpy array (RGB or Gray)
+                                    if img_arr is not None:
+                                        # Convert numpy to PIL
+                                        # Check limits
+                                        pil_img = Image.fromarray(img_arr)
+                                        grid_images[(row, col)] = (pil_img, tile_idx)
+                                        if tile_w == 0:
+                                            tile_w, tile_h = pil_img.size
                     
-            except Exception as e:
-                st.error(f"Error generating composite preview: {e}")
-                # Fallback? No, just error.
+                    if tile_w > 0 and tile_h > 0:
+                        # Calculate Canvas with Overlap
+                        # Overlap is percentage of size? User inputs overlap_x (float) e.g. 10.0
+                        ov_x_px = int(tile_w * (overlap_x / 100.0))
+                        ov_y_px = int(tile_h * (overlap_y / 100.0))
+                        
+                        # Canvas Size
+                        # Width = (W * Cols) - (Overlap * (Cols-1))
+                        canvas_w = (tile_w * grid_cols_count) - (ov_x_px * (grid_cols_count - 1))
+                        canvas_h = (tile_h * grid_rows_count) - (ov_y_px * (grid_rows_count - 1))
+                        
+                        # Ensure positive (overlap < 100%)
+                        canvas_w = max(canvas_w, tile_w)
+                        canvas_h = max(canvas_h, tile_h)
+                        
+                        composite = Image.new('RGB', (canvas_w, canvas_h), (0, 0, 0))
+                        draw = ImageDraw.Draw(composite)
+                        
+                        for row in range(grid_rows_count):
+                            for col in range(grid_cols_count):
+                                if (row, col) in grid_images:
+                                    img, tidx = grid_images[(row, col)]
+                                    
+                                    # Position
+                                    # x = col * (W - Overlap)
+                                    pos_x = col * (tile_w - ov_x_px)
+                                    pos_y = row * (tile_h - ov_y_px)
+                                    
+                                    composite.paste(img, (pos_x, pos_y))
+                                    
+                                    # Draw Text
+                                    txt = f"T{tidx}"
+                                    # Default font
+                                    # Draw Top-Left with shadow for visibility
+                                    txt_pos = (pos_x + 5, pos_y + 5)
+                                    draw.text((txt_pos[0]+1, txt_pos[1]+1), txt, fill="black")
+                                    draw.text(txt_pos, txt, fill="white")
+                                    
+                        st.image(composite, caption="Rough preview, not the final stitch", width="stretch")
+                    else:
+                        st.warning("No valid images found in this grid view region.")
+                        
+                except Exception as e:
+                    st.error(f"Error generating composite preview: {e}")
+                    # Fallback? No, just error.
 
-            # Replaced Loop
-            # for row in range(grid_rows_count):
-            # ... [Old Loop Removed] ...
+                # Replaced Loop
+                # for row in range(grid_rows_count):
+                # ... [Old Loop Removed] ...
 
 
-# Refactoring layout to put Tiles View toggle in Execution Config or right before Generate
-st.subheader("Advanced Options")
-symlink_help = """
-**Why user might want this:**
-1.  **Organization**: Renames your files into a clean `Tile_X_Y_Z.tif` format that the stitcher expects, without messing up your raw data.
-2.  **Space Saving**: Symlinks are just shortcuts. It organizes the dataset without copying terabytes of images.
-3.  **Verification**: You can look in the `tiles/` folder to verify the layout before running the heavy stitch.
-"""
-create_tiles_view = st.checkbox("Create Tiles View (Symlinks)?", value=False, help=symlink_help)
-tiles_view_possible = True
+    # Refactoring layout to put Tiles View toggle in Execution Config or right before Generate
+    st.subheader("Advanced Options")
+    symlink_help = """
+    **Why user might want this:**
+    1.  **Organization**: Renames your files into a clean `Tile_X_Y_Z.tif` format that the stitcher expects, without messing up your raw data.
+    2.  **Space Saving**: Symlinks are just shortcuts. It organizes the dataset without copying terabytes of images.
+    3.  **Verification**: You can look in the `tiles/` folder to verify the layout before running the heavy stitch.
+    """
+    create_tiles_view = st.checkbox("Create Tiles View (Symlinks)?", value=False, help=symlink_help)
+    tiles_view_possible = True
 
-# Hard Gating
-if len(files) > 100000 or (n_tiles_x * n_tiles_y) > 2500:
-    if create_tiles_view:
-        st.warning("Tiles View force-disabled due to dataset size (>100k files or >2500 tiles).")
-        create_tiles_view = False
-        tiles_view_possible = False
+    # Hard Gating
+    if len(files) > 100000 or (n_tiles_x * n_tiles_y) > 2500:
+        if create_tiles_view:
+            st.warning("Tiles View force-disabled due to dataset size (>100k files or >2500 tiles).")
+            create_tiles_view = False
+            tiles_view_possible = False
 
-generate_btn = st.button("Generate Run Bundle", disabled=(curr_total == 0))
+    generate_btn = st.button("Generate Run Bundle", disabled=(curr_total == 0))
 
-if generate_btn:
-    # Determine output folder suffix based on mode
-    from datetime import datetime
-    date_str = datetime.now().strftime("%y%m%d")
-    mode_slug = "slurm" if execution_mode == "Misha Cluster (Slurm)" else "local"
-    # User Request: YYMMDD_local_nr_dataset
-    align_slug = "nr" if allow_warping else "rigid"
-    output_folder = f"{date_str}_{mode_slug}_{align_slug}_{dataset_name}"
-    output_dir = os.path.join(output_base_dir, output_folder)
-    st.session_state['last_output_dir'] = output_dir
-    
-    os.makedirs(output_dir, exist_ok=True)
-    # Create manifest
-    manifest = DatasetManifest(
-        dataset_name=dataset_name,
-        n_tiles_x=n_tiles_x,
-        n_tiles_y=n_tiles_y,
-        z_slices=z_slices,
-        n_channels=n_channels,
-        overlap_x=int(overlap_x),
-        overlap_y=int(overlap_y),
-        voxel_size_x_um=voxel_x,
-        voxel_size_y_um=voxel_y,
-        voxel_size_z_um=voxel_z,
-        scan_order=scan_order,
-        channel_order=channel_order,
-        width_px=img_w,
-        height_px=img_h,
-        bit_depth=img_bd,
-        prefix_filter=prefix_filter,
-        files=files
-    )
-    
-    try:
+    if generate_btn:
+        # Determine output folder suffix based on mode
+        from datetime import datetime
+        date_str = datetime.now().strftime("%y%m%d")
+        mode_slug = "slurm" if execution_mode == "Misha Cluster (Slurm)" else "local"
+        # User Request: YYMMDD_local_nr_dataset
+        align_slug = "nr" if allow_warping else "rigid"
+        output_folder = f"{date_str}_{mode_slug}_{align_slug}_{dataset_name}"
+        output_dir = os.path.join(output_base_dir, output_folder)
+        st.session_state['last_output_dir'] = output_dir
+        
         os.makedirs(output_dir, exist_ok=True)
-        
-        generate_manifest(manifest, output_dir)
-        
-        # Generate OME compliant metadata
-        core.generate_ome_metadata(manifest, output_dir, channel_meta, is_pan_aslm)
-        
-        # Generate Tiles View FIRST if requested
-        tiles_created_ok = False
-        if create_tiles_view and tiles_view_possible:
-            try:
-                from core import generate_tiles_view
-                count, errs = generate_tiles_view(manifest, output_dir, data_path)
-                st.success(f"Generated {count} symlinks in 'tiles/' folder.")
-                if errs:
-                    st.warning(f"Encountered {len(errs)} errors (first few: {errs[:3]})")
-                tiles_created_ok = True
-            except Exception as e:
-                st.error(f"Failed to create tiles view: {e}")
-                st.info("On Windows, Symlinks require 'Developer Mode'. Falling back to absolute paths in config.")
-                tiles_created_ok = False
-        
-        # Generate Stacking Script (Preprocessing)
-        core.generate_stack_script(manifest, output_dir, data_path)
-
-        # nr_stitcher only supports 'raw' or 'zarr'
-        want_neuroglancer = "Neuroglancer Precomputed" in output_formats
-        want_zarr = "Zarr" in output_formats
-        want_raw = "Raw (.raw)" in output_formats
-        
-        # If user only wants Neuroglancer, we still need raw as intermediate
-        stitch_fmt = "zarr" if (want_zarr and not want_raw and not want_neuroglancer) else "raw"
-        
-        # Generate Settings
-        core.generate_stitch_settings(
-            manifest, 
-            output_dir, 
-            data_path, 
-            use_tiles_view=tiles_created_ok, 
-            stitch_output_format=stitch_fmt,
-            allow_warping=allow_warping,
-            binning=stitch_binning
+        # Create manifest
+        manifest = DatasetManifest(
+            dataset_name=dataset_name,
+            n_tiles_x=n_tiles_x,
+            n_tiles_y=n_tiles_y,
+            z_slices=z_slices,
+            n_channels=n_channels,
+            overlap_x=int(overlap_x),
+            overlap_y=int(overlap_y),
+            voxel_size_x_um=voxel_x,
+            voxel_size_y_um=voxel_y,
+            voxel_size_z_um=voxel_z,
+            scan_order=scan_order,
+            channel_order=channel_order,
+            width_px=img_w,
+            height_px=img_h,
+            bit_depth=img_bd,
+            prefix_filter=prefix_filter,
+            files=files
         )
         
-        # Generate Neuroglancer converter if requested
-        if want_neuroglancer:
-            core.generate_neuroglancer_converter(manifest, output_dir, binning=stitch_binning)
-        
-        if execution_mode == "Misha Cluster (Slurm)":
-            core.generate_slurm_script(manifest, slurm_params, output_dir, conda_config, convert_neuroglancer=want_neuroglancer)
-        else:
-            embed_path = pi2_local_path if 'pi2_local_path' in locals() and pi2_local_path else None
+        try:
+            os.makedirs(output_dir, exist_ok=True)
             
-            # Validation for Portable Bundle
-            if embed_path and not os.path.exists(embed_path):
-                st.error(f"Invalid 'pi2' source path: {embed_path}")
-                st.stop()
-                
-            core.generate_local_script(manifest, output_dir, conda_config, embed_pi2_path=embed_path, convert_neuroglancer=want_neuroglancer)
+            generate_manifest(manifest, output_dir)
             
-            if not embed_path:
-                st.warning("No 'pi2' source path provided. You MUST download 'pi2' manually and provide the path to create a portable bundle, or ensure it is installed in your environment.")
+            # Generate OME compliant metadata
+            core.generate_ome_metadata(manifest, output_dir, channel_meta, is_pan_aslm)
+            
+            # Generate Tiles View FIRST if requested
+            tiles_created_ok = False
+            if create_tiles_view and tiles_view_possible:
+                try:
+                    from core import generate_tiles_view
+                    count, errs = generate_tiles_view(manifest, output_dir, data_path)
+                    st.success(f"Generated {count} symlinks in 'tiles/' folder.")
+                    if errs:
+                        st.warning(f"Encountered {len(errs)} errors (first few: {errs[:3]})")
+                    tiles_created_ok = True
+                except Exception as e:
+                    st.error(f"Failed to create tiles view: {e}")
+                    st.info("On Windows, Symlinks require 'Developer Mode'. Falling back to absolute paths in config.")
+                    tiles_created_ok = False
+            
+            # Generate Stacking Script (Preprocessing)
+            core.generate_stack_script(manifest, output_dir, data_path)
+
+            # nr_stitcher only supports 'raw' or 'zarr'
+            want_neuroglancer = "Neuroglancer Precomputed" in output_formats
+            want_zarr = "Zarr" in output_formats
+            want_raw = "Raw (.raw)" in output_formats
+            
+            # If user only wants Neuroglancer, we still need raw as intermediate
+            stitch_fmt = "zarr" if (want_zarr and not want_raw and not want_neuroglancer) else "raw"
+            
+            # Generate Settings
+            core.generate_stitch_settings(
+                manifest, 
+                output_dir, 
+                data_path, 
+                use_tiles_view=tiles_created_ok, 
+                stitch_output_format=stitch_fmt,
+                allow_warping=allow_warping,
+                binning=stitch_binning
+            )
+            
+            # Generate Neuroglancer converter if requested
+            if want_neuroglancer:
+                core.generate_neuroglancer_converter(manifest, output_dir, binning=stitch_binning)
+            
+            if execution_mode == "Misha Cluster (Slurm)":
+                core.generate_slurm_script(manifest, slurm_params, output_dir, conda_config, convert_neuroglancer=want_neuroglancer)
             else:
-                st.success(f"Embedded 'pi2' from: {embed_path}")
-        
-        # Show output format summary
-        fmt_list = []
-        if want_raw: fmt_list.append("Raw (.raw)")
-        if want_zarr: fmt_list.append("Zarr")
-        if want_neuroglancer: fmt_list.append("Neuroglancer Precomputed")
-        st.info(f"📦 Output format(s): **{', '.join(fmt_list)}**")
-        
-        st.success(f"Successfully generated run bundle at: {output_dir}")
-        st.balloons()
-    except Exception as e:
-        st.error(f"Error generating bundle: {e}")
+                embed_path = pi2_local_path if 'pi2_local_path' in locals() and pi2_local_path else None
+                
+                # Validation for Portable Bundle
+                if embed_path and not os.path.exists(embed_path):
+                    st.error(f"Invalid 'pi2' source path: {embed_path}")
+                    st.stop()
+                    
+                core.generate_local_script(manifest, output_dir, conda_config, embed_pi2_path=embed_path, convert_neuroglancer=want_neuroglancer)
+                
+                if not embed_path:
+                    st.warning("No 'pi2' source path provided. You MUST download 'pi2' manually and provide the path to create a portable bundle, or ensure it is installed in your environment.")
+                else:
+                    st.success(f"Embedded 'pi2' from: {embed_path}")
+            
+            # Show output format summary
+            fmt_list = []
+            if want_raw: fmt_list.append("Raw (.raw)")
+            if want_zarr: fmt_list.append("Zarr")
+            if want_neuroglancer: fmt_list.append("Neuroglancer Precomputed")
+            st.info(f"📦 Output format(s): **{', '.join(fmt_list)}**")
+            
+            st.success(f"Successfully generated run bundle at: {output_dir}")
+            st.balloons()
+        except Exception as e:
+            st.error(f"Error generating bundle: {e}")
 
-# --- Tabs for Post-Generation / Utilities ---
-st.write("---")
-exp_verify = st.expander("✅ Verification & Metadata", expanded=True)
-exp_warping = st.expander("🗺️ Warping Diagnostics", expanded=False)
-exp_drift = st.expander("📉 Intensity Drift Analysis", expanded=False)
+    # --- Tabs for Post-Generation / Utilities ---
+    st.write("---")
 
-with exp_verify:
+    st.header("✅ Verification & Metadata")
     st.write("### Review Generated Bundle")
     
     last_out = st.session_state.get('last_output_dir')
@@ -895,6 +894,11 @@ with exp_verify:
             st.warning("Previous bundle directory no longer found.")
     else:
         st.info("Generate a bundle to see details here.")
+
+
+st.write("---")
+exp_warping = st.expander("🗺️ Warping Diagnostics", expanded=False)
+exp_drift = st.expander("📉 Intensity Drift Analysis", expanded=False)
 
 with exp_warping:
     st.write("### Warping Diagnostics")
@@ -995,6 +999,8 @@ with exp_warping:
                 worst_tiles = mags_data.get('worst_tiles', [])
                 x_norm = mags_data['x']
                 y_norm = mags_data['y']
+
+                source_tile = mags_data.get('source_tile', np.full(len(mags), "Unknown"))
                 max_tile = mags_data.get('max_tile_size', 300)
                 overlap_m = mags_data.get('overlap_margin', 0.15)
                 overlap_width = max(1, int(max_tile * overlap_m))
@@ -1073,20 +1079,28 @@ with exp_warping:
                     st.markdown("These individual tile interactions required the highest non-rigid compensations. If you see visual artifacts, these edge seams are most likely responsible.")
                     # Take top 10
                     top_10 = worst_tiles[:10]
-                    df_worst = pd.DataFrame(top_10, columns=["Max Shift (px grid)", "Shift Vector Grid (.raw)"])
+                    df_worst = pd.DataFrame(top_10, columns=["Max Shift (px grid)", "Tile Pairing ID", "Shift Vector Grid (.raw)"])
                     if bin_scale > 1.0:
                         df_worst["Max Shift (px full-res)"] = df_worst["Max Shift (px grid)"] * bin_scale
                     if voxel_x:
                         df_worst["Approx Max Shift (µm)"] = df_worst["Max Shift (px grid)"] * bin_scale * voxel_x
+                        
+                    # Reorder columns slightly for better UI
+                    cols = ["Tile Pairing ID", "Max Shift (px grid)"]
+                    if "Max Shift (px full-res)" in df_worst: cols.append("Max Shift (px full-res)")
+                    if "Approx Max Shift (µm)" in df_worst: cols.append("Approx Max Shift (µm)")
+                    cols.append("Shift Vector Grid (.raw)")
+                    df_worst = df_worst[cols]
+                    
                     st.dataframe(df_worst, hide_index=True, use_container_width=True)
                     
                     if st.button("Generate Before/After Seam Script"):
                         seam_script_path = os.path.join(analysis_dir, "verify_overlap_seam.py")
-                        seam_py = f'''#!/usr/bin/env python3
-"""
+                        seam_py = f"""#!/usr/bin/env python3
+\"\"\"
 Utility script to visualize the before/after difference of two overlapping tiles using the calculated pi2 shift fields.
 Requires: pip install numpy scipy tifffile matplotlib
-"""
+\"\"\"
 import argparse
 import numpy as np
 import tifffile
@@ -1100,21 +1114,45 @@ def load_warped_slice(tif_path, shift_raw_path, z_index, bin_scale={bin_scale}):
         
     print(f"Loading shift field {{shift_raw_path}}...")
     data = np.fromfile(shift_raw_path, dtype=np.float32)
-    # Note: reshape logic depends on pi2 version, assume grid size can be inferred or passed
-    # For a quick 2D visualization without full 3D interpolation, we return the raw image.
-    # To fully warp, use pi2.stitch or apply the 3D map_coordinates here.
-    
     return img_2d
 
 if __name__ == "__main__":
     print("To perform visual before/after seam verification, it is highly recommended to compare the")
     print("Rigid Stitch output (stitch_settings_rigid_preview.txt) vs the Non-Rigid stitched output in Fiji.")
-    print("Alternatively, you can use the pi2 Python API to warp individual slices.")
-'''
-                        with open(seam_script_path, "w") as f:
+"""
+                        with open(seam_script_path, "w", encoding='utf-8') as f:
                             f.write(seam_py)
                         st.success(f"Generated `{seam_script_path}`!")
-                
+                        
+                    st.markdown("##### Regional Edge Analysis")
+                    st.markdown("Breaking down deformation by spatial quadrants helps diagnose directional drag or specific stage-axis slipping.")
+                    
+                    m_top = y_norm < 0.25
+                    m_bot = y_norm > 0.75
+                    m_left = x_norm < 0.25
+                    m_right = x_norm > 0.75
+                    
+                    reg_data = []
+                    for label, mask in [("Top Edge (y < 0.25)", m_top), ("Bottom Edge (y > 0.75)", m_bot), 
+                                        ("Left Edge (x < 0.25)", m_left), ("Right Edge (x > 0.75)", m_right)]:
+                        if np.any(mask):
+                            reg_mags = mags[mask]
+                            r_med = np.median(reg_mags)
+                            r_max = np.max(reg_mags)
+                            
+                            row = {
+                                "Region": label,
+                                "Median Shift (px)": f"{r_med:.2f}",
+                                "Worst Shift (px)": f"{r_max:.2f}"
+                            }
+                            if bin_scale > 1.0:
+                                row["Median (px full-res)"] = f"{r_med * bin_scale:.2f}"
+                            if voxel_x:
+                                row["Median (µm)"] = f"{r_med * bin_scale * voxel_x:.2f}"
+                            
+                            reg_data.append(row)
+                    if reg_data:
+                        st.dataframe(pd.DataFrame(reg_data), hide_index=True, use_container_width=True)
                 # Sanity Check Panel
                 sanity_overlap = np.mean(mags > overlap_width) * 100
                 sanity_tile = np.mean(mags > max_tile) * 100
@@ -1139,27 +1177,69 @@ if __name__ == "__main__":
                 
                 with colB:
                     hexbin_help = """
-The color of each hexagon corresponds to the mean displacement magnitude of all the vectors that fall inside that specific spatial area:
+The color of each hexagon corresponds to the median displacement magnitude of all the vectors that fall inside that specific spatial area:
 
 *   **Dark Purple / Blue** regions indicate areas where the deformation was consistently very small, meaning the sample shape required very little non-linear stretching or shifting there.
 *   **Light Green / Yellow** regions indicate "hotspots" where the alignment algorithm had to apply a much larger scale of local deformation to get the data to register properly across tiles.
 """
                     st.markdown("#### Hexbin Plot of Local Deformation Hotspots", help=hexbin_help)
-                    fig2 = plt.figure(figsize=(7, 6))
-                    ax2 = plt.subplot(1, 1, 1)
-                    hb = ax2.hexbin(x_norm, y_norm, C=mags, gridsize=30, cmap='viridis', 
-                                   reduce_C_function=np.mean, mincnt=1)
-                    fig2.colorbar(hb, ax=ax2, label='Mean Displ. (px)')
-                    ax2.set_xlabel("Normalized X Coordinate")
-                    ax2.set_ylabel("Normalized Y Coordinate")
-                    ax2.set_xlim(0, 1)
-                    ax2.set_ylim(0, 1)
-                    ax2.invert_yaxis()
-                    ax2.set_aspect('equal', adjustable='box')
-                    ax2.grid(True, linestyle='--', alpha=0.3)
+                    plt.rcParams.update({'font.size': 8})
+                    fig2 = plt.figure(figsize=(7.08, 3.5))
+                    
+                    # Panel A: Median Magnitude
+                    ax2a = plt.subplot(1, 2, 1)
+                    hb1 = ax2a.hexbin(x_norm, y_norm, C=mags, gridsize=30, cmap='viridis', 
+                                   reduce_C_function=np.median, mincnt=1)
+                    fig2.colorbar(hb1, ax=ax2a, label='Median Displ. (px)', fraction=0.046, pad=0.04)
+                    ax2a.set_xlabel("Normalized X Coordinate")
+                    ax2a.set_ylabel("Normalized Y Coordinate")
+                    ax2a.set_xlim(0, 1)
+                    ax2a.set_ylim(0, 1)
+                    ax2a.invert_yaxis()
+                    ax2a.set_aspect('equal', adjustable='box')
+                    ax2a.grid(True, linestyle='--', alpha=0.3)
+                    ax2a.set_title("Median Deformation Severity")
+                    
+                    # Panel B: Density Count (Defensibility)
+                    ax2b = plt.subplot(1, 2, 2)
+                    hb2 = ax2b.hexbin(x_norm, y_norm, gridsize=30, cmap='magma', mincnt=1)
+                    fig2.colorbar(hb2, ax=ax2b, label='Vector Count (Density)', fraction=0.046, pad=0.04)
+                    ax2b.set_xlabel("Normalized X Coordinate")
+                    ax2b.set_xlim(0, 1)
+                    ax2b.set_ylim(0, 1)
+                    ax2b.invert_yaxis()
+                    ax2b.set_aspect('equal', adjustable='box')
+                    ax2b.grid(True, linestyle='--', alpha=0.3)
+                    ax2b.set_title("Sample Density (Defensibility)")
+                    
                     plt.tight_layout()
                     st.pyplot(fig2)
-                
+                    
+                st.markdown("#### Interactive Point-Cloud Drilldown", help="Hover over specific spatial regions to view exact sub-voxel deformation magnitudes. (Subsampled for web performance).")
+                try:
+                    import plotly.express as px
+                    max_points = 15000
+                    if len(mags) > max_points:
+                        indices = np.random.choice(len(mags), max_points, replace=False)
+                        px_x, px_y, px_mags = x_norm[indices], y_norm[indices], mags[indices]
+                        px_dx, px_dy, px_dz = v_dx[indices], v_dy[indices], v_dz[indices]
+                        px_src = source_tile[indices]
+                    else:
+                        px_x, px_y, px_mags = x_norm, y_norm, mags
+                        px_dx, px_dy, px_dz = v_dx, v_dy, v_dz
+                        px_src = source_tile
+                        
+                    plotly_df = pd.DataFrame({
+                        'X (norm)': px_x, 'Y (norm)': px_y, 'Magnitude': px_mags,
+                        'dx': px_dx, 'dy': px_dy, 'dz': px_dz, 'Source Pair': px_src
+                    })
+                    fig_interactive = px.scatter(plotly_df, x='X (norm)', y='Y (norm)', color='Magnitude',
+                                                                 color_continuous_scale='viridis', hover_data=['dx', 'dy', 'dz', 'Source Pair'])
+                    fig_interactive.update_yaxes(autorange="reversed")
+                    fig_interactive.update_layout(height=600)
+                    st.plotly_chart(fig_interactive, use_container_width=True)
+                except ImportError:
+                    st.info("💡 Install `plotly` (`pip install plotly`) to enable interactive hover drilldowns of the deformation field.")
                 # --- Python Plot Script Generation ---
                 script_path = os.path.join(analysis_dir, "plot_warping.py")
                 csv_path = os.path.join(analysis_dir, "warping_spatial_data.csv")
@@ -1172,7 +1252,8 @@ The color of each hexagon corresponds to the mean displacement magnitude of all 
                     'dy': v_dy,
                     'dz': v_dz,
                     'x_norm': x_norm, 
-                    'y_norm': y_norm
+                    'y_norm': y_norm,
+                    'source_tile': source_tile
                 }).to_csv(csv_path, index=False)
                 
                 plot_script_content = f"""#!/usr/bin/env python3
@@ -1185,11 +1266,15 @@ df = pd.read_csv("warping_spatial_data.csv")
 mags = df['magnitude_px'].values
 x_norm = df['x_norm'].values
 y_norm = df['y_norm'].values
+v_dx = df['dx'].values
+v_dy = df['dy'].values
+v_dz = df['dz'].values
 
-fig = plt.figure(figsize=(15, 6))
+plt.rcParams.update({{'font.size': 8}})
+fig = plt.figure(figsize=(7.08, 7))
 
 # Plot 1: Histogram
-ax1 = plt.subplot(1, 2, 1)
+ax1 = plt.subplot(2, 2, 1)
 ax1.hist(mags, bins=50, color='skyblue', edgecolor='black')
 ax1.set_title("Warping Distribution (Overlap Peripheries)")
 ax1.set_xlabel("Displacement Magnitude (pixels)")
@@ -1197,26 +1282,53 @@ ax1.set_ylabel("Frequency (Subsampled Voxels)")
 ax1.grid(True, linestyle='--', alpha=0.3)
 ax1.set_yscale('log')
 
-# Plot 2: 2D Spatial Heatmap
-ax2 = plt.subplot(1, 2, 2)
-hb = ax2.hexbin(x_norm, y_norm, C=mags, gridsize=30, cmap='viridis', 
-               reduce_C_function=np.mean, mincnt=1)
-fig.colorbar(hb, ax=ax2, label='Mean Displ. (px)')
-ax2.set_title("Universal Tile Overlap Heatmap")
-ax2.set_xlabel("Normalized X Coordinate")
-ax2.set_ylabel("Normalized Y Coordinate")
-ax2.set_xlim(0, 1)
-ax2.set_ylim(0, 1)
-ax2.invert_yaxis()
-ax2.set_aspect('equal', adjustable='box')
-ax2.grid(True, linestyle='--', alpha=0.3)
+# Plot 2: 2D Spatial Heatmap (Median Magnitude)
+ax2a = plt.subplot(2, 2, 2)
+hb1 = ax2a.hexbin(x_norm, y_norm, C=mags, gridsize=30, cmap='viridis', 
+               reduce_C_function=np.median, mincnt=1)
+fig.colorbar(hb1, ax=ax2a, label='Median Displ. (px)')
+ax2a.set_title("Universal Tile Overlap Heatmap")
+ax2a.set_xlabel("Normalized X Coordinate")
+ax2a.set_ylabel("Normalized Y Coordinate")
+ax2a.set_xlim(0, 1)
+ax2a.set_ylim(0, 1)
+ax2a.invert_yaxis()
+ax2a.set_aspect('equal', adjustable='box')
+ax2a.grid(True, linestyle='--', alpha=0.3)
+
+# Plot 3: Violin Plots
+ax3 = plt.subplot(2, 2, 3)
+parts = ax3.violinplot([v_dx, v_dy, v_dz], showmeans=False, showmedians=True)
+for pc in parts['bodies']:
+    pc.set_facecolor('skyblue')
+    pc.set_edgecolor('black')
+    pc.set_alpha(0.7)
+ax3.set_xticks([1, 2, 3])
+ax3.set_xticklabels(['dx', 'dy', 'dz'])
+ax3.set_ylabel("Displacement (pixels)")
+ax3.set_title("Deformation Vector Distribution")
+ax3.grid(True, linestyle='--', alpha=0.3)
+
+# Plot 4: 2D Density Heatmap (Defensibility)
+ax2b = plt.subplot(2, 2, 4)
+hb2 = ax2b.hexbin(x_norm, y_norm, gridsize=30, cmap='magma', mincnt=1)
+fig.colorbar(hb2, ax=ax2b, label='Vector Count')
+ax2b.set_title("Vector Density (Defensibility)")
+ax2b.set_xlabel("Normalized X Coordinate")
+ax2b.set_ylabel("Normalized Y Coordinate")
+ax2b.set_xlim(0, 1)
+ax2b.set_ylim(0, 1)
+ax2b.invert_yaxis()
+ax2b.set_aspect('equal', adjustable='box')
+ax2b.grid(True, linestyle='--', alpha=0.3)
 
 plt.tight_layout()
+fig.savefig("qc_warping_spatial.pdf", format='pdf', bbox_inches='tight')
+print("Saved qc_warping_spatial.pdf")
 plt.show()
 """
-                with open(script_path, "w") as f:
-                    f.write(plot_script_content)
-                
+                with open(script_path, "w", encoding='utf-8') as f:
+                    f.write(plot_script_content)                
                 st.info(f"💾 Render script saved to `{script_path}` for editing/reference.")
             else:
                 st.warning("⚠️ Could not find global `defpoints` or tile-level `world_to_local_shifts` files in the specified directory.")
@@ -1258,77 +1370,90 @@ with exp_drift:
         else:
             with st.spinner("Analyzing volume intensities (Subsampled)..."):
                 try:
+                    try:
+                        import scipy.stats as sp_stats
+                        has_scipy = True
+                    except ImportError:
+                        has_scipy = False
+                        st.warning("⚠️ `scipy` is not installed in this environment. Advanced fit metrics (Spearman ρ, Theil-Sen) will fall back to basic linear approximations. You can optionally `pip install scipy` for more robust analytics.")
+                        
                     drift_data = analyze_intensity_drift(manifest_path, stacks_dir)
                     
                     if drift_data:
                         tiles = drift_data['tiles']
                         df = pd.DataFrame(tiles)
-                        
                         import matplotlib.pyplot as plt
                         
                         try:
                             from scipy.stats import theilslopes
                             theil_func = theilslopes
                         except ImportError:
-                            try:
-                                from scipy.stats.mstats import theilslopes
-                                theil_func = theilslopes
-                            except ImportError:
-                                # Bulletproof fallback if scipy.stats is completely corrupted/missing
-                                def theil_func(y, x):
-                                    slope, intercept = np.polyfit(x, y, 1)
-                                    return slope, intercept, 0, 0
-                        
+                            def theil_func(y, x):
+                                slope, intercept = np.polyfit(x, y, 1)
+                                return slope, intercept, 0, 0
+                                
                         drift_help = """
-**Interpretation patterns:**
-
-*   **Downward slope overall** → photobleaching, illumination decay, or exposure change over time.
-*   **Upward slope overall** → gain/offset drift upward or illumination ramp.
-*   **Step changes** → settings changed mid-run, shutter/laser hiccup, auto-exposure, file-type mismatch, or chunked processing differences.
-*   **Color-separated bands** → column-specific illumination or shading correction issues; can also indicate scan-order interactions.
-
 **Robust Normalized Drift (S):**
-The metric `S = ln(p90) - ln(p50)` mathematically isolates true multiplicative illumination/gain drift from physical sample variations. By subtracting the log-median structural baseline (`p50`) from the log-peak signal proxy (`p90`), this metric cancels out fluctuations caused purely by "how much bright biological structure" happens to be inside a given tile.
+The metric `S = ln(p90) - ln(p50)` mathematically isolates true multiplicative illumination/gain drift from physical sample variations. 
 """
                         st.markdown("#### Raw vs. Normalized Intensity Drift", help=drift_help)
                         
                         df.sort_values('acq_index', inplace=True)
-                        
-                        # Robust normalized signal: S = ln(p90) - ln(p50)
-                        # This cancels physical biology concentration differences but preserves multiplicative illumination drift
                         df['S'] = np.log(df['p90'].clip(lower=1)) - np.log(df['p50'].clip(lower=1))
-                        df['B'] = df['p10']
                         
-                        # Quantitative robust trend (Theil-Sen slope)
                         slope, intercept, lo_slope, up_slope = theil_func(df['S'], df['acq_index'])
-                        
-                        # Log-space derivative: a slope of 0.01 in natural log implies a 1% multiplicative change per 1 tile.
                         pct_change = slope * 100 * 100 
+                        mult_drift_100 = np.exp(slope * 100) - 1
                         
-                        # Non-parametric rolling median trend
+                        # Spearman Rho
+                        if has_scipy:
+                            spearman_rho, _ = sp_stats.spearmanr(df['acq_index'], df['S'])
+                            if np.isnan(spearman_rho): spearman_rho = 0.0
+                        else:
+                            spearman_rho = 0.0
+                        
+                        S_hat = intercept + slope * df['acq_index']
+                        ss_res = np.sum((df['S'] - S_hat) ** 2)
+                        ss_tot = np.sum((df['S'] - np.mean(df['S'])) ** 2)
+                        r2_linear = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+                        baseline_S = df['S'].median() if df['S'].median() != 0 else 1.0
+                        
                         window = max(3, len(df) // 10)
                         df['S_roll'] = df['S'].rolling(window, center=True, min_periods=1).median()
+                        df['p90_roll'] = df['p90'].rolling(window, center=True, min_periods=1).median()
                         
-                        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+                        # SAT FRAC Setup
+                        med_sat = df.get('sat_frac', pd.Series([0])).median()
+                        max_sat = df.get('sat_frac', pd.Series([0])).max()
+                        count_sat = (df.get('sat_frac', pd.Series([0])) > 0).sum()
                         
-                        # Plot 1: Raw Sanity View
-                        scatter1 = ax1.scatter(df['acq_index'], df['p90'], c=df['col_index'], cmap='viridis', alpha=0.7)
-                        ax1.set_ylabel("Intensity (90th Percentile)")
+                        st.info(f"**Drift Trend (/100 tiles)**: {mult_drift_100:+.2%}  |  **Spearman ρ**: {spearman_rho:.3f}  |  **Max Saturated Voxels**: {max_sat:.1e}")
+                        
+                        fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(10, 10), sharex=True)
+                        
+                        sc1 = ax1.scatter(df['acq_index'], df['p90'], c=df['col_index'], cmap='viridis', alpha=0.7)
+                        ax1.plot(df['acq_index'], df['p90_roll'], 'k-', lw=2, alpha=0.8, label=f'Rolling Median (w={window})')
+                        ax1.set_ylabel("Intensity (p90)")
                         ax1.set_title("Sanity View: Raw Unnormalized Peak Intensity")
                         ax1.grid(True, linestyle="--", alpha=0.3)
-                        fig.colorbar(scatter1, ax=ax1, label="Column Index")
+                        fig.colorbar(sc1, ax=ax1, label="Column Index")
                         
-                        # Plot 2: Normalized Robust View
-                        scatter2 = ax2.scatter(df['acq_index'], df['S'], c=df['col_index'], cmap='viridis', alpha=0.7)
+                        sc2 = ax2.scatter(df['acq_index'], df['S'], c=df['col_index'], cmap='viridis', alpha=0.7)
                         ax2.plot(df['acq_index'], intercept + slope * df['acq_index'], 'r--', linewidth=2, label=f'Robust Trend: {pct_change:+.2f}% / 100 tiles')
-                        ax2.plot(df['acq_index'], df['S_roll'], 'k-', linewidth=2, alpha=0.8, label=f'Rolling Median (w={window})')
-                        
-                        ax2.set_xlabel("Acquisition Index")
-                        ax2.set_ylabel("Normalized Signal S = ln(p90) - ln(p50)")
-                        ax2.set_title("Robust Normalized Drift (Content-Independent)")
+                        ax2.plot(df['acq_index'], df['S_roll'], 'k-', linewidth=2, alpha=0.8, label=f'Rolling Median')
+                        ax2.set_ylabel("Normalized S = ln(p90) - ln(p50)")
+                        ax2.set_title("Robust Normalized Drift")
                         ax2.grid(True, linestyle="--", alpha=0.3)
                         ax2.legend()
-                        fig.colorbar(scatter2, ax=ax2, label="Column Index")
+                        fig.colorbar(sc2, ax=ax2, label="Column Index")
+                        
+                        sat_col = df['sat_frac'] * 100 if 'sat_frac' in df else pd.Series([0]*len(df))
+                        sc3 = ax3.scatter(df['acq_index'], sat_col, c=df['col_index'], cmap='viridis', alpha=0.7)
+                        ax3.set_xlabel("Acquisition Index")
+                        ax3.set_ylabel("Saturated Voxels (%)")
+                        ax3.set_title("Hardware Saturation Trajectory")
+                        ax3.grid(True, linestyle="--", alpha=0.3)
+                        fig.colorbar(sc3, ax=ax3, label="Column Index")
                         
                         plt.tight_layout()
                         st.pyplot(fig)
@@ -1336,8 +1461,6 @@ The metric `S = ln(p90) - ln(p50)` mathematically isolates true multiplicative i
                         # --- Python Plot Script Generation ---
                         script_path = os.path.join(drift_analysis_dir, "plot_drift.py")
                         csv_path = os.path.join(drift_analysis_dir, "drift_data.csv")
-                        
-                        # Save CSV for script
                         df.to_csv(csv_path, index=False)
                         
                         plot_script_content = f"""#!/usr/bin/env python3
@@ -1346,66 +1469,124 @@ import numpy as np
 import matplotlib.pyplot as plt
 
 try:
-    from scipy.stats import theilslopes
-    theil_func = theilslopes
+    import scipy.stats as sp_stats
+    has_scipy = True
 except ImportError:
-    try:
-        from scipy.stats.mstats import theilslopes
-        theil_func = theilslopes
-    except ImportError:
-        def theil_func(y, x):
-            slope, intercept = np.polyfit(x, y, 1)
-            return slope, intercept, 0, 0
+    has_scipy = False
 
-# Load data
+def theil_func(y, x):
+    slope, intercept = np.polyfit(x, y, 1)
+    return slope, intercept, 0, 0
+
 df = pd.read_csv("drift_data.csv")
+df.sort_values('acq_index', inplace=True)
 
-# Ensure calculation is reproduced for standalone tweaking
 df['S'] = np.log(df['p90'].clip(lower=1)) - np.log(df['p50'].clip(lower=1))
 
 slope, intercept, lo_slope, up_slope = theil_func(df['S'], df['acq_index'])
-pct_change = slope * 100 * 100 
+baseline_S = df['S'].median() if df['S'].median() != 0 else 1.0
+
+slope_S = slope
+mult_drift_100 = np.exp(slope_S * 100) - 1
+
+S_hat = intercept + slope * df['acq_index']
+ss_res = np.sum((df['S'] - S_hat) ** 2)
+ss_tot = np.sum((df['S'] - np.mean(df['S'])) ** 2)
+r2_linear = 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+
+spearman_rho = 0.0
+if has_scipy:
+    spearman_rho, _ = sp_stats.spearmanr(df['acq_index'], df['S'])
+    if np.isnan(spearman_rho): spearman_rho = 0.0
+
 window = max(3, len(df) // 10)
 df['S_roll'] = df['S'].rolling(window, center=True, min_periods=1).median()
+df['p90_roll'] = df['p90'].rolling(window, center=True, min_periods=1).median()
 
-fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 8), sharex=True)
+med_sat = df['sat_frac'].median() if 'sat_frac' in df else 0
+max_sat = df['sat_frac'].max() if 'sat_frac' in df else 0
+count_sat = (df['sat_frac'] > 0).sum() if 'sat_frac' in df else 0
 
-# Sanity Plot
+plt.rcParams.update({{'font.size': 8}})
+fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(7.08, 9), sharex=True)
+
 sc1 = ax1.scatter(df['acq_index'], df['p90'], c=df['col_index'], cmap='viridis', alpha=0.7)
+ax1.plot(df['acq_index'], df['p90_roll'], 'k-', lw=2, alpha=0.8, label=f'Rolling Median (w={{window}})')
 ax1.set_ylabel("Intensity (p90)", fontsize=12)
 ax1.set_title("Raw Unnormalized Peak Intensity", fontsize=14)
 ax1.grid(True, linestyle="--", alpha=0.3)
+ax1.legend(loc='upper right')
 fig.colorbar(sc1, ax=ax1, label="Column Index")
 
-# Normalized Plot
 sc2 = ax2.scatter(df['acq_index'], df['S'], c=df['col_index'], cmap='viridis', alpha=0.7)
-ax2.plot(df['acq_index'], intercept + slope * df['acq_index'], 'r--', lw=2, label=f'Robust Trend: {{pct_change:+.2f}}% / 100 tiles')
+ax2.plot(df['acq_index'], S_hat, 'r--', lw=2, label=f'Robust Trend: {{mult_drift_100:+.1%}} / 100 tiles')
 ax2.plot(df['acq_index'], df['S_roll'], 'k-', lw=2, alpha=0.8, label='Rolling Median')
 
-ax2.set_xlabel("Acquisition Index", fontsize=12)
 ax2.set_ylabel("Normalized S = ln(p90)-ln(p50)", fontsize=12)
 ax2.set_title("Robust Normalized Signal Drift", fontsize=14)
 ax2.grid(True, linestyle="--", alpha=0.3)
-ax2.legend()
+ax2.legend(loc='upper right')
 fig.colorbar(sc2, ax=ax2, label="Column Index")
 
-# Remove top/right spines for cleaner look
-for ax in [ax1, ax2]:
+sc3 = ax3.scatter(df['acq_index'], df['sat_frac'] * 100 if 'sat_frac' in df else df['p90']*0, c=df['col_index'], cmap='viridis', alpha=0.7)
+ax3.set_xlabel("Acquisition Index", fontsize=12)
+ax3.set_ylabel("Saturated Voxels (%)", fontsize=12)
+ax3.set_title("Hardware Saturation Trajectory", fontsize=14)
+ax3.grid(True, linestyle="--", alpha=0.3)
+fig.colorbar(sc3, ax=ax3, label="Column Index")
+
+stats_text = (
+f"N tiles: {{len(df)}}\n"
+f"Slope (S/tile): {{slope_S:.2e}}\n"
+f"Drift (/100): {{mult_drift_100:+.2%}}\n"
+f"Fit (R² lin): {{r2_linear:.3f}}\n"
+f"Fit (Spearman ρ): {{spearman_rho:.3f}}\n"
+f"Median(S): {{baseline_S:.3f}}\n"
+f"P95(S): {{np.percentile(df['S'], 95):.3f}}\n"
+f"---\n"
+f"Sat Median: {{med_sat:.1e}}\n"
+f"Sat Max: {{max_sat:.1e}}\n"
+f"Sat count > 0: {{count_sat}}"
+)
+props = dict(boxstyle='round', facecolor='white', alpha=0.8, edgecolor='gray')
+ax1.text(0.02, 0.95, stats_text, transform=ax1.transAxes, fontsize=9, verticalalignment='top', bbox=props)
+
+for ax in [ax1, ax2, ax3]:
     ax.spines['top'].set_visible(False)
     ax.spines['right'].set_visible(False)
 
 plt.tight_layout()
+fig.savefig("qc_intensity_timeseries.pdf", format='pdf', bbox_inches='tight')
+print("Saved qc_intensity_timeseries.pdf")
 plt.show()
 """
-                        with open(script_path, "w") as f:
+                        import json
+                        script_path = os.path.join(drift_analysis_dir, "plot_drift.py")
+                        json_path = os.path.join(drift_analysis_dir, "qc_intensity_timeseries.json")
+                        
+                        qc_payload = {
+                            "n_tiles": len(df),
+                            "slope_S_per_tile": slope,
+                            "mult_drift_100_tiles": mult_drift_100,
+                            "fit_r2_linear": r2_linear,
+                            "fit_spearman_rho": spearman_rho,
+                            "median_S": baseline_S,
+                            "p95_S": np.percentile(df['S'], 95),
+                            "sat_frac_median": med_sat,
+                            "sat_frac_max": max_sat,
+                            "sat_frac_nonzero_count": int(count_sat)
+                        }
+                        
+                        with open(script_path, "w", encoding='utf-8') as f:
                             f.write(plot_script_content)
+                        with open(json_path, 'w', encoding='utf-8') as jf:
+                            json.dump(qc_payload, jf, indent=4)
                             
-                        st.info(f"**Exported Plot**: A standalone python script to reproduce and edit this exact robust graph has been saved to: `{os.path.basename(script_path)}`")
+                        st.info(f"💾 Render script saved to `{os.path.basename(script_path)}` for editing/reference, along with quantitative QC metadata `{json_path}`.")
                         
                         if drift_data['percent_drop'] > 5.0 and drift_data['correlation'] < -0.3:
                             st.warning("⚠️ Noticeable intensity drop detected. Gain correction is highly recommended before final stitching.")
                             
-                        # Add sub-button for physical correction
                         if st.button("Generate Gain-Corrected Stacks"):
                             with st.spinner("Rewriting stacks with normalized intensity..."):
                                 from core import generate_gain_corrected_stacks

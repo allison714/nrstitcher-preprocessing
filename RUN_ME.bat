@@ -20,7 +20,7 @@ for %%p in (
     "C:\Program Files\anaconda3\Scripts\activate.bat"
 ) do (
     if exist %%p (
-        set "CONDA_ACTIVATE=%%p"
+        set "CONDA_ACTIVATE=%%~p"
         goto :conda_found
     )
 )
@@ -45,16 +45,16 @@ call "%CONDA_ACTIVATE%"
 echo [INFO] Checking for 'stitch_app' workspace environment...
 call conda env list | findstr /i "stitch_app" >nul
 if errorlevel 1 (
-    echo [INFO] Environment 'stitch_app' not found. Creating it immediately (Python 3.9)...
+    echo [INFO] Environment 'stitch_app' not found. Creating it immediately ^(Python 3.9^)...
     call conda create -n stitch_app python=3.9 -y
     call conda activate stitch_app
-    
-    echo [INFO] Installing required Python packages from requirements.txt...
-    pip install -r requirements.txt
 ) else (
     echo [INFO] Environment 'stitch_app' formally found. Activating...
     call conda activate stitch_app
 )
+
+echo [INFO] Ensuring required Python packages from requirements.txt are installed...
+pip install -r requirements.txt
 
 echo.
 echo [INFO] Starting the Streamlit Graphical Interface...

@@ -3,3 +3,5 @@ pandas
 tifffile
 matplotlib
 numpy
+scipy
+plotly
