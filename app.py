@@ -158,6 +158,8 @@ is_pan_aslm = st.checkbox("pan-ASLM Defaults", value=False, help="Auto-fills Sca
 
 def_vox_xy = 0.203125 if is_pan_aslm else 0.200
 def_img_dim = 3200 if is_pan_aslm else width_px
+def_overlap = 5 if is_pan_aslm else 15
+def_bit_depth = 16 if is_pan_aslm else bit_depth
 
 col1, col2, col3 = st.columns(3)
 
@@ -171,8 +173,8 @@ with col1:
 with col2:
     st.subheader("Geometry")
     # Enforce integer percentage overlap
-    overlap_x = st.number_input("Overlap X (%)", min_value=0, max_value=100, value=15, step=1)
-    overlap_y = st.number_input("Overlap Y (%)", min_value=0, max_value=100, value=15, step=1)
+    overlap_x = st.number_input("Overlap X (%)", min_value=0, max_value=100, value=def_overlap, step=1)
+    overlap_y = st.number_input("Overlap Y (%)", min_value=0, max_value=100, value=def_overlap, step=1)
     
     st.write("**Voxel Size (µm)**")
     vc1, vc2, vc3 = st.columns(3)
@@ -187,7 +189,14 @@ with col3:
     st.subheader("Image Specs (Auto-Detected)")
     img_w = st.number_input("Width (px)", value=def_img_dim if is_pan_aslm else width_px)
     img_h = st.number_input("Height (px)", value=def_img_dim if is_pan_aslm else height_px)
-    img_bd = st.number_input("Bit Depth", value=bit_depth)
+    img_bd = st.number_input("Bit Depth", value=def_bit_depth)
+    
+    st.write("**Framerate (fps)**")
+    fps_sel = st.selectbox("FPS (Acquisition Speed)", [1, 5, 10, 20, "Custom..."], index=0 if is_pan_aslm else 2, label_visibility="collapsed")
+    if fps_sel == "Custom...":
+        fps_val = st.number_input("Custom FPS", min_value=0.1, value=10.0, step=1.0, label_visibility="collapsed")
+    else:
+        fps_val = float(fps_sel)
 
 col4, col5 = st.columns(2)
 with col4:
@@ -213,7 +222,7 @@ if n_channels > 0:
             
             # Default values for Channel 0
             default_name = "pan-stain" if i == 0 else ""
-            default_ex_wl = "488nm" if i == 0 else ""
+            default_ex_wl = ""
             
             name = st.text_input("Name", value=default_name, key=f"name_{i}", placeholder="e.g. DAPI", label_visibility="collapsed")
             ex_wl = st.text_input("Excitation Wavelength", value=default_ex_wl, key=f"ex_wl_{i}", placeholder="Excitation (e.g. 488nm)", label_visibility="collapsed")
@@ -366,7 +375,7 @@ with st.expander("⚙️ Execution, Bundle Generation & Verification", expanded=
             tmp_manifest = DatasetManifest(
                 dataset_name=dataset_name, n_tiles_x=n_tiles_x, n_tiles_y=n_tiles_y, z_slices=z_slices, n_channels=n_channels,
                 overlap_x=int(overlap_x), overlap_y=int(overlap_y), voxel_size_x_um=voxel_x, voxel_size_y_um=voxel_y, voxel_size_z_um=voxel_z,
-                scan_order=scan_order, channel_order=channel_order, width_px=img_w, height_px=img_h, bit_depth=img_bd,
+                scan_order=scan_order, channel_order=channel_order, width_px=img_w, height_px=img_h, bit_depth=img_bd, fps=fps_val,
                 prefix_filter=prefix_filter, files=files
             )
             
@@ -796,6 +805,7 @@ with st.expander("⚙️ Execution, Bundle Generation & Verification", expanded=
             width_px=img_w,
             height_px=img_h,
             bit_depth=img_bd,
+            fps=fps_val,
             prefix_filter=prefix_filter,
             files=files
         )

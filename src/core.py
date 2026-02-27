@@ -30,6 +30,7 @@ class DatasetManifest:
     width_px: int
     height_px: int
     bit_depth: int
+    fps: float
     prefix_filter: str
     files: List[str]
 
@@ -1087,6 +1088,7 @@ def generate_ome_metadata(manifest: DatasetManifest, output_dir: str, channel_me
         f.write(f"Overlap_X_Percent={manifest.overlap_x}\n")
         f.write(f"Overlap_Y_Percent={manifest.overlap_y}\n")
         f.write(f"ScanOrder={manifest.scan_order}\n")
+        f.write(f"FPS={manifest.fps}\n")
 
 
 def generate_slurm_script(manifest: DatasetManifest, slurm_params: Dict, output_dir: str, conda_config: Dict[str, str], convert_neuroglancer: bool = False):
