@@ -270,8 +270,8 @@ with st.expander("⚙️ Execution, Bundle Generation & Verification", expanded=
     with st.expander("Configure Backend Paths", expanded=True):
         # Set defaults based on mode
         if execution_mode == "Misha Cluster (Slurm)":
-            def_conda_sh = "~/miniconda3/etc/profile.d/conda.sh"
-            def_entry = "" # "auto" by default (leave empty)
+            def_conda_sh = "/gpfs/radev/apps/avx512/software/miniconda/24.3.0-miniforge/etc/profile.d/conda.sh"
+            def_entry = "/gpfs/radev/scratch/kuan/amc345/pan-aslm2neuroglancer//gpfs/radev/scratch/kuan/amc345/" 
             def_env = "pi2_env"
         else:
             # Local defaults
